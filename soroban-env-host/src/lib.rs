@@ -33,6 +33,7 @@ mod builtin_contracts;
 
 pub mod auth;
 pub mod vm;
+pub mod zephyr;
 pub use vm::Vm;
 pub mod storage;
 pub use budget::{DEFAULT_HOST_DEPTH_LIMIT, DEFAULT_XDR_RW_LIMITS};

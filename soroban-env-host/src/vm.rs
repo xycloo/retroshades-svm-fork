@@ -109,6 +109,9 @@ impl Host {
                 (hf.wrap)(&mut linker).map_err(|le| wasmi::Error::from(le))?;
             }
         }
+
+        // todo: add here zephyr adapter host functions
+
         Ok(linker)
     }
 }

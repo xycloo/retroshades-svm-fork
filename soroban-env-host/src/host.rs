@@ -17,6 +17,7 @@ use crate::{
         LedgerEntryData, PublicKey, ScAddress, ScBytes, ScErrorCode, ScErrorType, ScString,
         ScSymbol, ScVal, TimePoint, Uint256,
     },
+    zephyr::ZephyrAdapter,
     AddressObject, Bool, BytesObject, Compare, ConversionError, EnvBase, Error, LedgerInfo,
     MapObject, Object, StorageType, StringObject, Symbol, SymbolObject, TryFromVal, Val, VecObject,
     VmCaller, VmCallerEnv, Void,
@@ -88,6 +89,8 @@ pub(crate) const MIN_LEDGER_PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Clone, Default)]
 struct HostImpl {
+    zephyr_adapter: RefCell<ZephyrAdapter>,
+
     module_cache: RefCell<Option<ModuleCache>>,
     shared_linker: RefCell<Option<wasmi::Linker<Host>>>,
     source_account: RefCell<Option<AccountId>>,
@@ -248,6 +251,14 @@ impl_checked_borrow_helpers!(
     try_borrow_events,
     try_borrow_events_mut
 );
+
+impl_checked_borrow_helpers!(
+    zephyr_adapter,
+    ZephyrAdapter,
+    try_borrow_zephyr,
+    try_borrow_zephyr_mut
+);
+
 impl_checked_borrow_helpers!(
     authorization_manager,
     AuthorizationManager,
@@ -353,6 +364,7 @@ impl Host {
         #[cfg(all(not(target_family = "wasm"), feature = "tracy"))]
         let _client = tracy_client::Client::start();
         Self(Rc::new(HostImpl {
+            zephyr_adapter: RefCell::new(ZephyrAdapter::default()),
             module_cache: RefCell::new(None),
             shared_linker: RefCell::new(None),
             source_account: RefCell::new(None),
@@ -1125,6 +1137,16 @@ impl EnvBase for Host {
 
 impl VmCallerEnv for Host {
     type VmUserState = Host;
+
+    fn zephyr_emit(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        target: Val,
+        event: Val,
+    ) -> Result<Void, HostError> {
+        self.record_retroshade(target, event)?;
+        Ok(Val::VOID)
+    }
 
     // region: "context" module functions
 
