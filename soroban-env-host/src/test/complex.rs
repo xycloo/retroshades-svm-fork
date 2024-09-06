@@ -45,7 +45,7 @@ fn run_complex() -> Result<(), HostError> {
         )?;
         let realhost: Host = (*host).clone();
         drop(host);
-        let (store, _) = realhost.try_finish().unwrap();
+        let (store, _, _) = realhost.try_finish().unwrap();
         store.footprint
     };
 

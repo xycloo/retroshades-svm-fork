@@ -20,7 +20,7 @@ pub(crate) struct RetroshadeEvent {
     event_object: Val,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RetroshadeExport {
     pub contract_id: Hash,
     pub target: ScVal,

@@ -1455,6 +1455,7 @@ dependencies = [
  "rand_chacha",
  "rustversion",
  "sec1",
+ "serde",
  "serde_json",
  "sha2",
  "sha3",

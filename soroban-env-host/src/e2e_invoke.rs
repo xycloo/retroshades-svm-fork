@@ -4,7 +4,6 @@
 /// host functions.
 use std::{cmp::max, rc::Rc};
 
-use crate::ledger_info::get_key_durability;
 use crate::storage::EntryWithLiveUntil;
 #[cfg(any(test, feature = "recording_mode"))]
 use crate::{
@@ -31,6 +30,7 @@ use crate::{
     },
     DiagnosticLevel, Error, Host, HostError, LedgerInfo, MeteredOrdMap,
 };
+use crate::{ledger_info::get_key_durability, zephyr::RetroshadeExport};
 #[cfg(any(test, feature = "recording_mode"))]
 use sha2::{Digest, Sha256};
 
@@ -54,6 +54,9 @@ pub struct InvokeHostFunctionResult {
     ///
     /// Empty when invocation fails.
     pub encoded_contract_events: Vec<Vec<u8>>,
+
+    /// Vector of xdr bytes representing a retroshade event.
+    pub retroshades: Vec<RetroshadeExport>,
 }
 
 /// Result of invoking a single host function prepared for embedder consumption.
@@ -108,7 +111,7 @@ pub struct LedgerEntryChange {
 pub struct LedgerEntryLiveUntilChange {
     /// Hash of the LedgerKey for the entry that this live until ledger change is tied to
     pub key_hash: Vec<u8>,
-    /// Durability of the entry.    
+    /// Durability of the entry.
     pub durability: ContractDataDurability,
     /// Live until ledger of the old entry.
     pub old_live_until_ledger: u32,
@@ -354,7 +357,7 @@ pub fn invoke_host_function_with_trace_hook<T: AsRef<[u8]>, I: ExactSizeIterator
     if have_trace_hook {
         host.set_trace_hook(None)?;
     }
-    let (storage, events) = host.try_finish()?;
+    let (storage, events, retroshades) = host.try_finish()?;
     if enable_diagnostics {
         extract_diagnostic_events(&events, diagnostic_events);
     }
@@ -374,12 +377,14 @@ pub fn invoke_host_function_with_trace_hook<T: AsRef<[u8]>, I: ExactSizeIterator
             encoded_invoke_result,
             ledger_changes,
             encoded_contract_events,
+            retroshades,
         })
     } else {
         Ok(InvokeHostFunctionResult {
             encoded_invoke_result,
             ledger_changes: vec![],
             encoded_contract_events: vec![],
+            retroshades: vec![],
         })
     }
 }
@@ -602,7 +607,7 @@ pub fn invoke_host_function_in_recording_mode(
     };
     let _resources_roundtrip: SorobanResources =
         host.metered_from_xdr(host.to_xdr_non_metered(&resources)?.as_slice())?;
-    let (storage, events) = host.try_finish()?;
+    let (storage, events, _) = host.try_finish()?;
     if enable_diagnostics {
         extract_diagnostic_events(&events, diagnostic_events);
     }
@@ -675,7 +680,7 @@ fn extract_diagnostic_events(events: &Events, diagnostic_events: &mut Vec<Diagno
     }
 }
 
-pub(crate) fn ledger_entry_to_ledger_key(
+pub fn ledger_entry_to_ledger_key(
     le: &LedgerEntry,
     budget: &Budget,
 ) -> Result<LedgerKey, HostError> {

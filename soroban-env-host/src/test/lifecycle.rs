@@ -876,7 +876,7 @@ mod cap_54_55_56 {
         }
         let realhost = host.clone();
         drop(host);
-        let (storage, _events) = realhost.try_finish()?;
+        let (storage, _events, _) = realhost.try_finish()?;
         let storage = Storage::with_enforcing_footprint_and_map(storage.footprint, storage.map);
 
         // Phase 2: build new host with previous ledger output as storage. Possibly on new protocol.
@@ -935,7 +935,7 @@ mod cap_54_55_56 {
         let realhost = host.clone();
         drop(host);
         let budget = realhost.budget_cloned();
-        let (storage, _events) = realhost.try_finish()?;
+        let (storage, _events, _) = realhost.try_finish()?;
         Ok((budget, storage))
     }
 

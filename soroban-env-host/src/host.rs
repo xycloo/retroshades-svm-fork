@@ -17,7 +17,7 @@ use crate::{
         LedgerEntryData, PublicKey, ScAddress, ScBytes, ScErrorCode, ScErrorType, ScString,
         ScSymbol, ScVal, TimePoint, Uint256,
     },
-    zephyr::ZephyrAdapter,
+    zephyr::{RetroshadeExport, ZephyrAdapter},
     AddressObject, Bool, BytesObject, Compare, ConversionError, EnvBase, Error, LedgerInfo,
     MapObject, Object, StorageType, StringObject, Symbol, SymbolObject, TryFromVal, Val, VecObject,
     VmCaller, VmCallerEnv, Void,
@@ -693,12 +693,13 @@ impl Host {
     ///
     /// Use [`Host::can_finish`] to determine before calling the function if it
     /// will succeed.
-    pub fn try_finish(self) -> Result<(Storage, Events), HostError> {
+    pub fn try_finish(self) -> Result<(Storage, Events, Vec<RetroshadeExport>), HostError> {
         let events = self.try_borrow_events()?.externalize(&self)?;
+        let retroshades = self.try_borrow_zephyr()?.externalize(&self)?;
         Rc::try_unwrap(self.0)
             .map(|host_impl| {
                 let storage = host_impl.storage.into_inner();
-                (storage, events)
+                (storage, events, retroshades)
             })
             .map_err(|_| {
                 Error::from_type_and_code(ScErrorType::Context, ScErrorCode::InternalError).into()

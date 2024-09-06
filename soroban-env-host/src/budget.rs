@@ -1,7 +1,7 @@
 mod dimension;
 mod limits;
 mod model;
-mod util;
+pub mod util;
 mod wasmi_helper;
 
 pub(crate) use limits::DepthLimiter;
