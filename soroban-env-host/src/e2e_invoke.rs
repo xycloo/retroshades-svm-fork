@@ -83,6 +83,8 @@ pub struct InvokeHostFunctionRecordingModeResult {
     /// Size of the encoded contract events and the return value.
     /// Non-zero only when invocation has succeeded.
     pub contract_events_and_return_value_size: u32,
+
+    pub retroshades: Vec<RetroshadeExport>,
 }
 
 /// Represents a change of the ledger entry from 'old' value to the 'new' one.
@@ -336,6 +338,7 @@ pub fn invoke_host_function_with_trace_hook<T: AsRef<[u8]>, I: ExactSizeIterator
     let host_function: HostFunction = host.metered_from_xdr(encoded_host_fn.as_ref())?;
     let source_account: AccountId = host.metered_from_xdr(encoded_source_account.as_ref())?;
     host.set_source_account(source_account)?;
+
     host.set_ledger_info(ledger_info)?;
     host.set_authorization_entries(auth_entries)?;
     let seed32: [u8; 32] = base_prng_seed.as_ref().try_into().map_err(|_| {
@@ -346,12 +349,17 @@ pub fn invoke_host_function_with_trace_hook<T: AsRef<[u8]>, I: ExactSizeIterator
             &[],
         )
     })?;
+    println!("Invoking host function");
     host.set_base_prng_seed(seed32)?;
     if enable_diagnostics {
         host.set_diagnostic_level(DiagnosticLevel::Debug)?;
     }
+
+    //println!("{:?}", host.in_storage_recording_mode_switch());
+
     let result = {
         let _span1 = tracy_span!("Host::invoke_function");
+        println!("Invoking host function");
         host.invoke_function(host_function)
     };
     if have_trace_hook {
@@ -607,7 +615,7 @@ pub fn invoke_host_function_in_recording_mode(
     };
     let _resources_roundtrip: SorobanResources =
         host.metered_from_xdr(host.to_xdr_non_metered(&resources)?.as_slice())?;
-    let (storage, events, _) = host.try_finish()?;
+    let (storage, events, retroshades) = host.try_finish()?;
     if enable_diagnostics {
         extract_diagnostic_events(&events, diagnostic_events);
     }
@@ -648,6 +656,7 @@ pub fn invoke_host_function_in_recording_mode(
         ledger_changes,
         contract_events,
         contract_events_and_return_value_size,
+        retroshades,
     })
 }
 

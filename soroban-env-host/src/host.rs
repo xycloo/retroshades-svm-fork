@@ -64,6 +64,9 @@ pub(crate) use frame::Frame;
 use rand_chacha::ChaCha20Rng;
 use soroban_env_common::SymbolSmall;
 
+#[cfg(any(test, feature = "recording_mode"))]
+use crate::storage::{FootprintMode, SnapshotSource};
+
 #[cfg(any(test, feature = "testutils"))]
 #[derive(Clone, Copy)]
 pub enum ContractInvocationEvent {
@@ -414,6 +417,19 @@ impl Host {
         if let crate::storage::FootprintMode::Recording(_) = self.try_borrow_storage()?.mode {
             Ok(true)
         } else {
+            Ok(false)
+        }
+    }
+
+    #[cfg(any(test, feature = "recording_mode"))]
+    pub fn in_storage_recording_mode_switch(
+        &self,
+        snapshot_source: Rc<dyn SnapshotSource>,
+    ) -> Result<bool, HostError> {
+        if let crate::storage::FootprintMode::Recording(_) = self.try_borrow_storage()?.mode {
+            Ok(true)
+        } else {
+            self.try_borrow_storage_mut()?.mode = FootprintMode::Recording(snapshot_source);
             Ok(false)
         }
     }
