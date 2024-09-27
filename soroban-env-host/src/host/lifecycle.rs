@@ -27,18 +27,22 @@ impl Host {
         contract_executable: ContractExecutable,
     ) -> Result<(), HostError> {
         let storage_key = self.contract_instance_ledger_key(&contract_id)?;
+
         if self
             .try_borrow_storage_mut()?
             .has_with_host(&storage_key, self, None)?
         {
-            return Err(self.err(
+            // RETROSHADES NOTE: when executing the retroshades, the contracts already exist
+            // so we need to ignore this error.
+            // We can make this trust assumption currently.
+            /*return Err(self.err(
                 ScErrorType::Storage,
                 ScErrorCode::ExistingValue,
                 "contract already exists",
                 &[self
                     .add_host_object(self.scbytes_from_hash(&contract_id)?)?
                     .into()],
-            ));
+            ));*/
         }
         // Make sure the contract code exists. Without this check it would be
         // possible to accidentally create a contract that never may be invoked
