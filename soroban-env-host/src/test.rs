@@ -3,6 +3,7 @@ pub(crate) mod observe;
 mod address;
 mod auth;
 mod basic;
+mod bls12_381;
 mod budget_metering;
 mod bytes;
 mod complex;
@@ -18,6 +19,7 @@ mod hostile;
 #[cfg(opt_build)]
 mod hostile_opt;
 mod invocation;
+mod invoker_auth;
 mod ledger;
 mod lifecycle;
 mod lifetime_extension;

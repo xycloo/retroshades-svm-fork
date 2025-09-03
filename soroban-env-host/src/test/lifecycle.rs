@@ -5,11 +5,11 @@ use crate::{
     storage::{AccessType, Footprint, Storage, StorageMap},
     xdr::{
         self, AccountId, ContractEvent, ContractEventBody, ContractEventType, ContractEventV0,
-        ContractExecutable, ContractIdPreimage, ContractIdPreimageFromAddress, CreateContractArgs,
-        CreateContractArgsV2, ExtensionPoint, Hash, HashIdPreimage, HashIdPreimageContractId,
-        HostFunction, LedgerEntryData, Limited, ScAddress, ScBytes, ScErrorCode, ScErrorType,
-        ScSymbol, ScVal, ScVec, SorobanAuthorizationEntry, SorobanAuthorizedFunction,
-        SorobanAuthorizedInvocation, SorobanCredentials, Uint256, VecM,
+        ContractExecutable, ContractId, ContractIdPreimage, ContractIdPreimageFromAddress,
+        CreateContractArgs, CreateContractArgsV2, ExtensionPoint, Hash, HashIdPreimage,
+        HashIdPreimageContractId, HostFunction, LedgerEntryData, Limited, ScAddress, ScBytes,
+        ScErrorCode, ScErrorType, ScSymbol, ScVal, ScVec, SorobanAuthorizationEntry,
+        SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials, Uint256, VecM,
     },
     Env, Host, LedgerInfo, Symbol, DEFAULT_XDR_RW_LIMITS,
 };
@@ -20,12 +20,12 @@ use soroban_test_wasms::{ADD_I32, CREATE_CONTRACT, UPDATEABLE_CONTRACT};
 
 use crate::testutils::{generate_account_id, generate_bytes_array};
 
-fn get_contract_wasm_ref(host: &Host, contract_id: Hash) -> Hash {
+fn get_contract_wasm_ref(host: &Host, contract_id: ContractId) -> Hash {
     let storage_key = host.contract_instance_ledger_key(&contract_id).unwrap();
     host.with_mut_storage(|s: &mut Storage| {
-        assert!(s.has_with_host(&storage_key, &host, None).unwrap());
+        assert!(s.has(&storage_key, &host, None).unwrap());
 
-        match &s.get_with_host(&storage_key, host, None).unwrap().data {
+        match &s.get(&storage_key, host, None).unwrap().data {
             LedgerEntryData::ContractData(e) => match &e.val {
                 ScVal::ContractInstance(i) => match &i.executable {
                     ContractExecutable::Wasm(h) => Ok(h.clone()),
@@ -42,9 +42,9 @@ fn get_contract_wasm_ref(host: &Host, contract_id: Hash) -> Hash {
 fn get_contract_wasm(host: &Host, wasm_hash: Hash) -> Vec<u8> {
     let storage_key = host.contract_code_ledger_key(&wasm_hash).unwrap();
     host.with_mut_storage(|s: &mut Storage| {
-        assert!(s.has_with_host(&storage_key, &host, None).unwrap());
+        assert!(s.has(&storage_key, &host, None).unwrap());
 
-        match &s.get_with_host(&storage_key, host, None).unwrap().data {
+        match &s.get(&storage_key, host, None).unwrap().data {
             LedgerEntryData::ContractCode(code_entry) => Ok(code_entry.code.to_vec()),
             _ => panic!("expected contract WASM code"),
         }
@@ -142,7 +142,7 @@ fn get_contract_id_from_address(
     host: &Host,
     address: ScAddress,
     salt: [u8; 32],
-) -> (Hash, ContractIdPreimage) {
+) -> (ContractId, ContractIdPreimage) {
     let contract_id_preimage = ContractIdPreimage::Address(ContractIdPreimageFromAddress {
         address,
         salt: Uint256(salt.to_vec().try_into().unwrap()),
@@ -155,11 +155,15 @@ fn get_contract_id_from_address(
         contract_id_preimage: contract_id_preimage.clone(),
     });
 
-    let contract_id = sha256_hash_id_preimage(full_id_preimage);
+    let contract_id = ContractId(sha256_hash_id_preimage(full_id_preimage));
     (contract_id, contract_id_preimage)
 }
 
-fn get_contract_id(host: &Host, account: AccountId, salt: [u8; 32]) -> (Hash, ContractIdPreimage) {
+fn get_contract_id(
+    host: &Host,
+    account: AccountId,
+    salt: [u8; 32],
+) -> (ContractId, ContractIdPreimage) {
     get_contract_id_from_address(host, ScAddress::Account(account), salt)
 }
 
@@ -174,7 +178,7 @@ fn create_contract_with_constructor(
     wasm: &[u8],
     constructor_args: &Vec<ScVal>,
     params: CreateContractTestParams,
-) -> Result<Hash, HostError> {
+) -> Result<ContractId, HostError> {
     host.set_source_account(source_account.clone()).unwrap();
     let (contract_id, contract_id_preimage) = get_contract_id(&host, source_account, salt);
 
@@ -238,7 +242,7 @@ fn create_contract_with_constructor(
     Ok(contract_id)
 }
 
-fn create_contract_from_source_account(host: &Host, wasm: &[u8]) -> Hash {
+fn create_contract_from_source_account(host: &Host, wasm: &[u8]) -> ContractId {
     create_contract_with_constructor(
         host,
         generate_account_id(host),
@@ -269,7 +273,7 @@ fn create_contract_using_parent_id_test() {
         }),
     });
 
-    let child_id = sha256_hash_id_preimage(child_pre_image);
+    let child_id = ContractId(sha256_hash_id_preimage(child_pre_image));
     let child_wasm = ADD_I32;
 
     // Install the code for the child contract.
@@ -680,7 +684,7 @@ mod cap_54_55_56 {
     use soroban_test_wasms::UPLOAD_CONTRACT;
 
     use crate::{
-        host::crypto::sha256_hash_from_bytes,
+        crypto::sha256_hash_from_bytes,
         storage::{FootprintMap, StorageMap},
         test::observe::ObservedHost,
         testutils::wasm::wasm_module_with_a_bit_of_everything,
@@ -767,8 +771,8 @@ mod cap_54_55_56 {
         }
         fn reload(self, host: &Host) -> Result<Self, HostError> {
             host.with_mut_storage(|storage| {
-                let contract_entry = storage.get_with_host(&self.contract_key, host, None)?;
-                let wasm_entry = storage.get_with_host(&self.wasm_key, host, None)?;
+                let contract_entry = storage.get(&self.contract_key, host, None)?;
+                let wasm_entry = storage.get(&self.wasm_key, host, None)?;
                 Ok(ContractAndWasmEntries {
                     contract_key: self.contract_key,
                     contract_entry,
@@ -777,14 +781,14 @@ mod cap_54_55_56 {
                 })
             })
         }
-        fn from_contract_id(host: &Host, contract_id: Hash) -> Result<Self, HostError> {
+        fn from_contract_id(host: &Host, contract_id: ContractId) -> Result<Self, HostError> {
             let contract_key = host.contract_instance_ledger_key(&contract_id)?;
             let wasm_hash = get_contract_wasm_ref(host, contract_id);
             let wasm_key = host.contract_code_ledger_key(&wasm_hash)?;
 
             host.with_mut_storage(|storage| {
-                let contract_entry = storage.get_with_host(&contract_key, host, None)?;
-                let wasm_entry = storage.get_with_host(&wasm_key, host, None)?;
+                let contract_entry = storage.get(&contract_key, host, None)?;
+                let wasm_entry = storage.get(&wasm_key, host, None)?;
                 Ok(ContractAndWasmEntries {
                     contract_key,
                     contract_entry,
@@ -867,7 +871,7 @@ mod cap_54_55_56 {
         upload_hostname: &'static str,
         second_hostname: &'static str,
         contract_cost_model_mode: TestContractCostModelMode,
-    ) -> Result<(ObservedHost, Hash), HostError> {
+    ) -> Result<(ObservedHost, ContractId), HostError> {
         // Phase 1: upload contract, tear down host, "close the ledger" and possibly change protocol.
         let (host, contract) = new_host_with_uploaded_contract(upload_hostname)?;
         let contract_id = host.contract_id_from_address(contract)?;
@@ -885,10 +889,11 @@ mod cap_54_55_56 {
             storage,
             Budget::default(),
         )?;
+        host.ensure_module_cache_contains_host_storage_contracts()?;
         Ok((host, contract_id))
     }
 
-    fn clobber_refined_cost_model(host: &Host, contract_id: Hash) -> Result<(), HostError> {
+    fn clobber_refined_cost_model(host: &Host, contract_id: ContractId) -> Result<(), HostError> {
         let contract_key = host.contract_instance_ledger_key(&contract_id)?;
         let ContractExecutable::Wasm(wasm_hash) = host
             .retrieve_contract_instance_from_storage(&contract_key)?
@@ -912,7 +917,7 @@ mod cap_54_55_56 {
             }),
             ..(*entry).clone()
         });
-        storage.put(&code_key, &new_entry, live_until_ledger, host.as_budget())?;
+        storage.put(&code_key, &new_entry, live_until_ledger, &host, None)?;
         Ok(())
     }
 
@@ -1089,11 +1094,11 @@ mod cap_54_55_56 {
             OldContractWithNoCostInputs,
         )?;
         // force a module-cache build (this normally happens on first VM call)
-        host.build_module_cache_if_needed()?;
+        host.ensure_module_cache_contains_host_storage_contracts()?;
         let wasm = get_contract_wasm_ref(&host, contract_id);
         let module_cache = host.try_borrow_module_cache()?;
         if let Some(module_cache) = &*module_cache {
-            assert!(module_cache.get_module(&host, &wasm).is_ok());
+            assert!(module_cache.get_module(&wasm).is_ok());
         } else {
             panic!("expected module cache");
         }
@@ -1379,6 +1384,7 @@ mod cap_54_55_56 {
         })?;
 
         host.switch_to_enforcing_storage()?;
+        host.ensure_module_cache_contains_host_storage_contracts()?;
 
         let wasm_bytes = host.bytes_new_from_slice(&wasm_to_upload)?;
         let upload_args = host.vec_new_from_slice(&[wasm_bytes.to_val()])?;
@@ -1409,7 +1415,7 @@ mod cap_54_55_56 {
 
         // Check that the module cache did not get populated with the new wasm.
         if let Some(module_cache) = &*host.try_borrow_module_cache()? {
-            assert!(module_cache.get_module(&host, &wasm_hash)?.is_none());
+            assert!(module_cache.get_module(&wasm_hash)?.is_none());
         } else {
             panic!("expected module cache");
         }
@@ -1932,7 +1938,8 @@ mod cap_58_constructor {
                 let salt = generate_bytes_array(&host);
                 let (new_contract_id, contract_id_preimage) =
                     get_contract_id(&host, source_account.clone(), salt.clone());
-                let authorizer_address = ScAddress::Contract(Hash(generate_bytes_array(&host)));
+                let authorizer_address =
+                    ScAddress::Contract(ContractId(Hash(generate_bytes_array(&host))));
                 let authorizer_val = ScVal::Address(authorizer_address.clone());
                 let constructor_args = vec![
                     authorizer_val.clone(),
@@ -2168,7 +2175,7 @@ mod cap_58_constructor {
             constructor_args: &Vec<ScVal>,
             params: CreateContractTestParams,
             expected_context: HostVec,
-        ) -> Result<Hash, HostError> {
+        ) -> Result<ContractId, HostError> {
             let (contract_id, contract_id_preimage) =
                 get_contract_id_from_address(host, account_address.clone(), salt);
             // Check that the test is not misconfigured - we can't pass constructor args
@@ -2394,5 +2401,134 @@ mod cap_58_constructor {
             );
             assert!(res.is_ok());
         }
+    }
+}
+
+mod cap_68_executable_getter {
+    use soroban_env_common::TryFromVal;
+
+    use super::*;
+    use crate::builtin_contracts::common_types::AddressExecutable;
+    use crate::builtin_contracts::stellar_asset_contract::test_stellar_asset_contract::TestStellarAssetContract;
+    use crate::builtin_contracts::testutils::create_account;
+    use crate::xdr::{Asset, PublicKey};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn get_non_existent_executable() {
+        let host = observe_host!(Host::test_host_with_recording_footprint());
+        let contract_address = host
+            .add_host_object(ScAddress::Contract(ContractId([0; 32].into())))
+            .unwrap();
+        let account_address = host
+            .add_host_object(ScAddress::Account(AccountId(
+                PublicKey::PublicKeyTypeEd25519([0; 32].into()),
+            )))
+            .unwrap();
+
+        assert!(host
+            .get_address_executable(contract_address)
+            .unwrap()
+            .is_void());
+        assert!(host
+            .get_address_executable(account_address)
+            .unwrap()
+            .is_void());
+    }
+
+    #[test]
+    fn get_account_executable() {
+        let host = observe_host!(Host::test_host_with_recording_footprint());
+        let account_id = AccountId(PublicKey::PublicKeyTypeEd25519([0; 32].into()));
+        create_account(&host, &account_id, vec![], 0, 0, [0; 4], None, None, 0);
+        let account_address = host
+            .add_host_object(ScAddress::Account(account_id))
+            .unwrap();
+        let executable = AddressExecutable::try_from_val(
+            &*host,
+            &host.get_address_executable(account_address).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(executable, AddressExecutable::Account));
+    }
+
+    #[test]
+    fn get_stellar_asset_contract_executable() {
+        let host = observe_host!(Host::test_host_with_recording_footprint());
+        let contract = TestStellarAssetContract::new_from_asset(&host, Asset::Native).unwrap();
+        let executable = AddressExecutable::try_from_val(
+            &*host,
+            &host
+                .get_address_executable(contract.address.as_object())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(executable, AddressExecutable::StellarAsset));
+    }
+
+    #[test]
+    fn get_wasm_executable_with_wasm_update() {
+        let host = observe_host!(Host::test_host_with_recording_footprint());
+
+        let old_wasm_hash_obj: Val = host
+            .invoke_function(HostFunction::UploadContractWasm(
+                UPDATEABLE_CONTRACT.to_vec().try_into().unwrap(),
+            ))
+            .unwrap()
+            .try_into_val(&*host)
+            .unwrap();
+
+        let contract_addr_obj = host.register_test_contract_wasm(UPDATEABLE_CONTRACT);
+
+        let old_executable = AddressExecutable::try_from_val(
+            &*host,
+            &host.get_address_executable(contract_addr_obj).unwrap(),
+        )
+        .unwrap();
+        let AddressExecutable::Wasm(executable_old_hash) = old_executable else {
+            panic!("unexpected executable type");
+        };
+        let old_wasm_hash = host
+            .hash_from_bytesobj_input("old_hash", old_wasm_hash_obj.try_into_val(&*host).unwrap())
+            .unwrap();
+        assert_eq!(
+            executable_old_hash.to_array().unwrap().as_slice(),
+            old_wasm_hash.0.as_slice()
+        );
+
+        let updated_wasm = ADD_I32;
+        let updated_wasm_hash_obj: Val = host
+            .invoke_function(HostFunction::UploadContractWasm(
+                updated_wasm.to_vec().try_into().unwrap(),
+            ))
+            .unwrap()
+            .try_into_val(&*host)
+            .unwrap();
+        let _ = host
+            .call(
+                contract_addr_obj,
+                Symbol::try_from_small_str("update").unwrap(),
+                test_vec![&*host, &updated_wasm_hash_obj, &false].into(),
+            )
+            .unwrap();
+
+        let new_executable = AddressExecutable::try_from_val(
+            &*host,
+            &host.get_address_executable(contract_addr_obj).unwrap(),
+        )
+        .unwrap();
+        let AddressExecutable::Wasm(executable_new_hash) = new_executable else {
+            panic!("unexpected executable type");
+        };
+        let new_wasm_hash = host
+            .hash_from_bytesobj_input(
+                "updated_hash",
+                updated_wasm_hash_obj.try_into_val(&*host).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            executable_new_hash.to_array().unwrap().as_slice(),
+            new_wasm_hash.0.as_slice()
+        );
     }
 }

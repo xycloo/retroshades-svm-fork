@@ -1,10 +1,12 @@
+#![allow(clippy::needless_lifetimes)]
 #[cfg(feature = "wasmi")]
 use crate::xdr::{ScErrorCode, ScErrorType};
 
 use super::{
     AddressObject, Bool, BytesObject, DurationObject, Error, I128Object, I256Object, I256Val,
-    I64Object, MapObject, StorageType, StringObject, SymbolObject, TimepointObject, U128Object,
-    U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject, Void,
+    I64Object, MapObject, MuxedAddressObject, StorageType, StringObject, SymbolObject,
+    TimepointObject, U128Object, U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject,
+    Void,
 };
 use crate::call_macro_with_all_host_functions;
 use crate::{CheckedEnvArg, EnvBase, Symbol};
@@ -24,7 +26,6 @@ use core::marker::PhantomData;
 /// allows code to import and use `Env` directly (such as the native
 /// contract) to call host methods without having to write `VmCaller::none()`
 /// everywhere.
-
 #[cfg(feature = "wasmi")]
 pub struct VmCaller<'a, T>(pub Option<wasmi::Caller<'a, T>>);
 #[cfg(feature = "wasmi")]
@@ -68,7 +69,7 @@ impl<'a, T> VmCaller<'a, T> {
 ///////////////////////////////////////////////////////////////////////////////
 /// X-macro use: defining trait VmCallerEnv
 ///////////////////////////////////////////////////////////////////////////////
-
+//
 // This is a helper macro used only by generate_vmcaller_checked_env_trait
 // below. It consumes a token-tree of the form:
 //
@@ -160,7 +161,7 @@ call_macro_with_all_host_functions! { generate_vmcaller_checked_env_trait }
 ///////////////////////////////////////////////////////////////////////////////
 /// X-macro use: impl<E> Env for VmCallerEnv<E>
 ///////////////////////////////////////////////////////////////////////////////
-
+//
 // This is a helper macro used only by
 // generate_impl_checked_env_for_vmcaller_checked_env below. It consumes a
 // token-tree of the form:

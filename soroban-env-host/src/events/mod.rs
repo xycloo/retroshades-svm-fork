@@ -8,15 +8,15 @@ pub(crate) use internal::{
 use crate::{
     num::{i256_from_pieces, u256_from_pieces},
     xdr::{
-        ContractEventBody, ContractEventType, ContractExecutable, PublicKey::PublicKeyTypeEd25519,
-        ScAddress, ScContractInstance, ScVal,
+        ClaimableBalanceId, ContractEventBody, ContractEventType, ContractExecutable, Hash, PoolId,
+        PublicKey::PublicKeyTypeEd25519, ScAddress, ScContractInstance, ScVal,
     },
     Error, Host, HostError, Val, VecObject,
 };
 pub(crate) use internal::{InternalContractEvent, InternalEvent};
 
 /// The external representation of a host event.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostEvent {
     pub event: crate::xdr::ContractEvent,
     // failed_call keeps track of if the call this event was emitted in failed
@@ -32,7 +32,25 @@ fn display_address(addr: &ScAddress, f: &mut std::fmt::Formatter<'_>) -> std::fm
             }
         },
         ScAddress::Contract(hash) => {
-            let strkey = stellar_strkey::Contract(hash.0);
+            let strkey = stellar_strkey::Contract(hash.0 .0);
+            write!(f, "{}", strkey)
+        }
+        ScAddress::MuxedAccount(muxed_account) => {
+            let strkey = stellar_strkey::ed25519::MuxedAccount {
+                ed25519: muxed_account.ed25519.0,
+                id: muxed_account.id,
+            };
+            write!(f, "{}", strkey)
+        }
+        // Note, that claimable balance and liquidity pool types can't normally
+        // appear in host, so we have the proper rendering for these here just
+        // for consistency (similar to e.g. non-representable ScVal types).
+        ScAddress::ClaimableBalance(ClaimableBalanceId::ClaimableBalanceIdTypeV0(Hash(cb_id))) => {
+            let strkey = stellar_strkey::ClaimableBalance::V0(*cb_id);
+            write!(f, "{}", strkey)
+        }
+        ScAddress::LiquidityPool(PoolId(Hash(pool_id))) => {
+            let strkey = stellar_strkey::LiquidityPool(*pool_id);
             write!(f, "{}", strkey)
         }
     }
@@ -116,18 +134,44 @@ impl core::fmt::Display for HostEvent {
         match &self.event.contract_id {
             None => (),
             Some(hash) => {
-                let strkey = stellar_strkey::Contract(hash.0);
+                let strkey = stellar_strkey::Contract(hash.0 .0);
                 write!(f, "contract:{}, ", strkey)?
             }
         }
         match &self.event.body {
             ContractEventBody::V0(ceb) => {
                 write!(f, "topics:[")?;
+
+                let mut is_fn_call = false;
                 for (i, topic) in ceb.topics.iter().enumerate() {
                     if i != 0 {
                         write!(f, ", ")?;
                     }
+
+                    // The second topic of the fn_call event is the contract id as ScBytes,
+                    // but we want to display it as a C key instead, so this block
+                    // tries to deduce if the event is the fn_call event.
+                    if i == 1 && is_fn_call {
+                        if let ScVal::Bytes(bytes) = topic {
+                            let try_convert_to_hash =
+                                TryInto::<[u8; 32]>::try_into(bytes.0.clone());
+                            if let Ok(contract_id) = try_convert_to_hash {
+                                let strkey = stellar_strkey::Contract(contract_id);
+                                write!(f, "{}", strkey)?;
+                                continue;
+                            }
+                        }
+                    }
+
                     display_scval(topic, f)?;
+
+                    if i == 0 {
+                        if let ScVal::Symbol(first_topic_str) = topic {
+                            if first_topic_str.0.as_slice() == "fn_call".as_bytes() {
+                                is_fn_call = true;
+                            }
+                        }
+                    }
                 }
                 write!(f, "], data:")?;
                 display_scval(&ceb.data, f)
@@ -140,12 +184,12 @@ impl core::fmt::Display for HostEvent {
 fn host_event_contract_id_is_strkey() {
     use crate::xdr::{
         AccountId, ContractEvent, ContractEventBody, ContractEventType, ContractEventV0,
-        ExtensionPoint, Hash, PublicKey,
+        ContractId, ExtensionPoint, Hash, PublicKey,
     };
     let he = HostEvent {
         event: ContractEvent {
             ext: ExtensionPoint::V0,
-            contract_id: Some(Hash([0; 32])),
+            contract_id: Some(ContractId(Hash([0; 32]))),
             type_: ContractEventType::Diagnostic,
             body: ContractEventBody::V0(ContractEventV0 {
                 topics: vec![ScVal::Address(ScAddress::Account(AccountId(

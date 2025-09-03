@@ -188,9 +188,9 @@ fn hostile_forged_objects_trap() -> Result<(), HostError> {
 
 const BAD_VALS: &[u64] = &[
     // These are Vals with bad tags.
-    0x0000_0000_0000_00_10_u64,
-    0x0000_0000_0000_00_4e_u64,
-    0x0000_0000_0000_00_7f_u64,
+    Tag::SmallCodeUpperBound as u64,
+    Tag::ObjectCodeUpperBound as u64,
+    Tag::Bad as u64,
     0x0000_0000_0000_00_ff_u64,
     // These are False with nonzero major and minor-bits.
     0x1111_0000_0000_00_00_u64,
@@ -524,16 +524,17 @@ fn excessive_logging() -> Result<(), HostError> {
     assert_eq!(constructor_events_len, 2);
     host.switch_to_enforcing_storage()?;
 
-    let expected_budget = expect![[r#"
+    let expected_budget = expect![
+        r#"
     =================================================================
-    Cpu limit: 2000000; used: 169149
-    Mem limit: 500000; used: 162403
+    Cpu limit: 2000000; used: 214303
+    Mem limit: 500000; used: 166812
     =================================================================
     CostType                           cpu_insns      mem_bytes      
-    WasmInsnExec                       768            0              
-    MemAlloc                           17058          67344          
-    MemCpy                             2866           0              
-    MemCmp                             512            0              
+    WasmInsnExec                       300            0              
+    MemAlloc                           16632          67392          
+    MemCpy                             2330           0              
+    MemCmp                             472            0              
     DispatchHostFunction               310            0              
     VisitObject                        244            0              
     ValSer                             0              0              
@@ -543,7 +544,7 @@ fn excessive_logging() -> Result<(), HostError> {
     VerifyEd25519Sig                   0              0              
     VmInstantiation                    0              0              
     VmCachedInstantiation              0              0              
-    InvokeVmFunction                   2149           15             
+    InvokeVmFunction                   1948           14             
     ComputeKeccak256Hash               0              0              
     DecodeEcdsaCurve256Sig             0              0              
     RecoverEcdsaSecp256k1Key           0              0              
@@ -553,31 +554,57 @@ fn excessive_logging() -> Result<(), HostError> {
     Int256Pow                          0              0              
     Int256Shift                        0              0              
     ChaCha20DrawBytes                  0              0              
-    ParseWasmInstructions              37423          13993          
-    ParseWasmFunctions                 657            180            
-    ParseWasmGlobals                   1276           93             
-    ParseWasmTableEntries              29644          6121           
-    ParseWasmTypes                     6977           387            
+    ParseWasmInstructions              74665          17967          
+    ParseWasmFunctions                 4224           370            
+    ParseWasmGlobals                   1377           104            
+    ParseWasmTableEntries              29989          6285           
+    ParseWasmTypes                     8292           505            
     ParseWasmDataSegments              0              0              
     ParseWasmElemSegments              0              0              
-    ParseWasmImports                   4134           795            
-    ParseWasmExports                   5651           554            
+    ParseWasmImports                   5483           806            
+    ParseWasmExports                   6709           568            
     ParseWasmDataSegmentBytes          0              0              
-    InstantiateWasmInstructions        43208          70792          
-    InstantiateWasmFunctions           62             138            
+    InstantiateWasmInstructions        43030          70704          
+    InstantiateWasmFunctions           59             114            
     InstantiateWasmGlobals             83             53             
-    InstantiateWasmTableEntries        1933           1025           
+    InstantiateWasmTableEntries        3300           1025           
     InstantiateWasmTypes               0              0              
     InstantiateWasmDataSegments        0              0              
     InstantiateWasmElemSegments        0              0              
-    InstantiateWasmImports             5829           770            
-    InstantiateWasmExports             4627           143            
+    InstantiateWasmImports             6476           762            
+    InstantiateWasmExports             4642           143            
     InstantiateWasmDataSegmentBytes    0              0              
     Sec1DecodePointUncompressed        0              0              
     VerifyEcdsaSecp256r1Sig            0              0              
+    Bls12381EncodeFp                   0              0              
+    Bls12381DecodeFp                   0              0              
+    Bls12381G1CheckPointOnCurve        0              0              
+    Bls12381G1CheckPointInSubgroup     0              0              
+    Bls12381G2CheckPointOnCurve        0              0              
+    Bls12381G2CheckPointInSubgroup     0              0              
+    Bls12381G1ProjectiveToAffine       0              0              
+    Bls12381G2ProjectiveToAffine       0              0              
+    Bls12381G1Add                      0              0              
+    Bls12381G1Mul                      0              0              
+    Bls12381G1Msm                      0              0              
+    Bls12381MapFpToG1                  0              0              
+    Bls12381HashToG1                   0              0              
+    Bls12381G2Add                      0              0              
+    Bls12381G2Mul                      0              0              
+    Bls12381G2Msm                      0              0              
+    Bls12381MapFp2ToG2                 0              0              
+    Bls12381HashToG2                   0              0              
+    Bls12381Pairing                    0              0              
+    Bls12381FrFromU256                 0              0              
+    Bls12381FrToU256                   0              0              
+    Bls12381FrAddSub                   0              0              
+    Bls12381FrMul                      0              0              
+    Bls12381FrPow                      0              0              
+    Bls12381FrInv                      0              0              
     =================================================================
 
-    "#]];
+    "#
+    ];
 
     // moderate logging
     {
@@ -1293,7 +1320,7 @@ fn test_invalid_expr_in_segments() -> Result<(), HostError> {
 
 #[test]
 fn test_stack_depth_stability() {
-    const MAX_WASM_STACK_DEPTH: u32 = 1023;
+    const MAX_WASM_STACK_DEPTH: u32 = 1024;
 
     let host = observe_host!(Host::test_host_with_recording_footprint());
     host.as_budget().reset_unlimited().unwrap();
@@ -1321,4 +1348,105 @@ fn test_stack_depth_stability() {
         ),
         (ScErrorType::Budget, ScErrorCode::ExceededLimit)
     ));
+}
+
+#[test]
+fn test_misc_hostile_wasms() {
+    // This test loads and runs a bunch of hostile WASM modules
+    // found in the hostile_inputs subdirectory. It attempts to
+    // instantiate the contract and then run a 0-ary function in
+    // the contract called "test".
+    let mut bad_inputs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    bad_inputs.push("src/test/hostile_inputs");
+    eprintln!("loading hostile inputs from {:?}", bad_inputs);
+    let mut n_wasms = 0;
+    let mut n_instantiated_ok = 0;
+    let mut n_instantiated_external_error = 0;
+    let mut n_instantiated_internal_error = 0;
+    let mut n_executed_ok = 0;
+    let mut n_executed_external_error = 0;
+    let mut n_executed_internal_error = 0;
+
+    for entry in std::fs::read_dir(bad_inputs).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().unwrap() == "wasm" {
+            let host = Host::test_host_with_recording_footprint();
+            let filename = path.file_name().unwrap().to_str().unwrap().to_string();
+            let wasm_code = std::fs::read(path).unwrap();
+            eprintln!("loaded {}-byte wasm {}", wasm_code.len(), filename);
+            n_wasms += 1;
+            host.as_budget().reset_unlimited().unwrap();
+            let addr_res = host.register_test_contract_wasm_from_source_account(
+                &wasm_code,
+                generate_account_id(&host),
+                generate_bytes_array(&host),
+            );
+            match addr_res {
+                Err(e) => {
+                    if e.error.is_code(ScErrorCode::InternalError) {
+                        eprintln!(
+                            "instantiation failed with internal error for {}: {:?}",
+                            filename, e
+                        );
+                        n_instantiated_internal_error += 1;
+                    } else {
+                        eprintln!(
+                            "instantiation failed with external error for {}: {:?}",
+                            filename, e
+                        );
+                        n_instantiated_external_error += 1;
+                    }
+                    continue;
+                }
+                Ok(contract_id) => {
+                    n_instantiated_ok += 1;
+                    let call_res = host.call(
+                        contract_id,
+                        Symbol::try_from_small_str("test").unwrap(),
+                        test_vec![&host].into(),
+                    );
+                    if let Err(e) = call_res {
+                        if e.error.is_code(ScErrorCode::InternalError) {
+                            eprintln!(
+                                "execution failed with internal error for {}: {:?}",
+                                filename, e
+                            );
+                            n_executed_internal_error += 1;
+                        } else {
+                            eprintln!(
+                                "execution failed with external error for {}: {:?}",
+                                filename, e
+                            );
+                            n_executed_external_error += 1;
+                        }
+                    } else {
+                        n_executed_ok += 1;
+                        eprintln!("execution succeeded for {}", filename);
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("loaded {} hostile Wasm modules", n_wasms);
+    eprintln!("instantiated {} contracts successfully", n_instantiated_ok);
+    eprintln!(
+        "instantiation failed with external error for {} contracts",
+        n_instantiated_external_error
+    );
+    eprintln!(
+        "instantiation failed with internal error for {} contracts",
+        n_instantiated_internal_error
+    );
+    eprintln!("executed {} contracts successfully", n_executed_ok);
+    eprintln!(
+        "execution failed with external error for {} contracts",
+        n_executed_external_error
+    );
+    eprintln!(
+        "execution failed with internal error for {} contracts",
+        n_executed_internal_error
+    );
+    assert_eq!(n_instantiated_internal_error, 0);
+    assert_eq!(n_executed_internal_error, 0);
 }

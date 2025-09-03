@@ -26,21 +26,25 @@ mod macros;
 pub mod budget;
 pub mod events;
 pub use events::diagnostic::DiagnosticLevel;
+mod builtin_contracts;
+pub(crate) mod crypto;
 mod host;
 pub(crate) mod host_object;
-
-mod builtin_contracts;
 
 pub mod auth;
 pub mod vm;
 pub mod zephyr;
-pub use vm::Vm;
+pub use vm::{CompilationContext, ModuleCache, Vm};
 pub mod storage;
 pub use budget::{DEFAULT_HOST_DEPTH_LIMIT, DEFAULT_XDR_RW_LIMITS};
 pub use host::{
-    metered_map::MeteredOrdMap, metered_vector::MeteredVector, Host, HostError, Seed, SEED_BYTES,
+    metered_map::MeteredOrdMap, metered_vector::MeteredVector, ErrorHandler, Host, HostError, Seed,
+    SEED_BYTES,
 };
 pub use soroban_env_common::*;
+
+#[cfg(any(test, feature = "testutils"))]
+pub use host::invocation_metering::{FeeEstimate, InvocationResources};
 
 pub mod ledger_info;
 pub use ledger_info::LedgerInfo;

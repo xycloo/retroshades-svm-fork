@@ -1,17 +1,19 @@
 use crate::{
     budget::Budget,
-    host::crypto::sha256_hash_from_bytes_raw,
+    crypto::sha256_hash_from_bytes_raw,
     xdr::{ContractCostType, Limited, ReadXdr, ScBytes, ScErrorCode, ScErrorType, WriteXdr},
     BytesObject, Host, HostError, DEFAULT_XDR_RW_LIMITS,
 };
 use std::io::Write;
+
+use super::ErrorHandler;
 
 struct MeteredWrite<'a, W: Write> {
     budget: &'a Budget,
     w: &'a mut W,
 }
 
-impl<'a, W> Write for MeteredWrite<'a, W>
+impl<W> Write for MeteredWrite<'_, W>
 where
     W: Write,
 {

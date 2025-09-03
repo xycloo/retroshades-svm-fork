@@ -20,33 +20,32 @@ exclude = ["soroban-test-wasms/wasm-workspace"]
 # NB: When bumping the major version make sure to clean up the
 # code guarded by `unstable-*` features to make it enabled
 # unconditionally.
-version = "22.0.0"
-rust-version = "1.79.0"
+version = "23.0.1"
+rust-version = "1.84.0"
 
 [workspace.dependencies]
-soroban-env-common = { version = "=22.0.0", path = "soroban-env-common", default-features = false }
-soroban-env-guest = { version = "=22.0.0", path = "soroban-env-guest" }
-soroban-env-host = { version = "=22.0.0", path = "soroban-env-host" }
-soroban-env-macros = { version = "=22.0.0", path = "soroban-env-macros" }
-soroban-builtin-sdk-macros = { version = "=22.0.0", path = "soroban-builtin-sdk-macros" }
+soroban-env-common = { version = "=23.0.1", path = "soroban-env-common", default-features = false }
+soroban-env-guest = { version = "=23.0.1", path = "soroban-env-guest" }
+soroban-env-host = { version = "=23.0.1", path = "soroban-env-host" }
+soroban-env-macros = { version = "=23.0.1", path = "soroban-env-macros" }
+soroban-builtin-sdk-macros = { version = "=23.0.1", path = "soroban-builtin-sdk-macros" }
 # NB: this must match the wasmparser version wasmi is using
 wasmparser = "=0.116.1"
 serde = { version = "1.0", features = ["derive"] }
 
 # NB: When updating, also update the version in rs-soroban-env dev-dependencies
 [workspace.dependencies.stellar-xdr]
-version = "=22.0.0"
-git = "https://github.com/stellar/rs-stellar-xdr"
-rev = "39d7dbb0c12bd422ee43a6e2e3277789da4eaac8"
+version = "=23.0.0"
+# git = "https://github.com/stellar/rs-stellar-xdr"
+# rev = "1a00274ac9c93d580cc4f5eba787906e759d632a"
 default-features = false
 features = ["serde"]
 
 [workspace.dependencies.wasmi]
 package = "soroban-wasmi"
-version = "=0.36.0-soroban.22.0.0"
+version = "=0.31.1-soroban.20.0.1"
 git = "https://github.com/stellar/wasmi"
-rev = "122a74a7c491929e5ac9de876099154ef7c06d06"
-features = ["no-hash-maps"]
+rev = "0ed3f3dee30dc41ebe21972399e0a73a41944aa0"
 
 # [patch."https://github.com/stellar/rs-stellar-xdr"]
 # [patch.crates-io]
@@ -57,6 +56,7 @@ features = ["no-hash-maps"]
 
 [profile.release]
 lto = true
+debug = true
 
 [profile.test-opt]
 inherits = "test"

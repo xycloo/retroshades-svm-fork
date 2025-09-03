@@ -5,8 +5,9 @@ use crate::Object;
 use super::Symbol;
 use super::{
     AddressObject, Bool, BytesObject, DurationObject, Error, I128Object, I256Object, I256Val,
-    I64Object, MapObject, StorageType, StringObject, SymbolObject, TimepointObject, U128Object,
-    U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject, Void,
+    I64Object, MapObject, MuxedAddressObject, StorageType, StringObject, SymbolObject,
+    TimepointObject, U128Object, U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject,
+    Void,
 };
 use crate::xdr::{ScErrorCode, ScErrorType};
 
@@ -133,9 +134,6 @@ pub trait EnvBase: Sized + Clone {
         x
     }
 
-    /// Used to check two environments are the same, returning Error if not.
-    fn check_same_env(&self, other: &Self) -> Result<(), Self::Error>;
-
     // Helpers for methods that wish to pass Rust lifetime-qualified _slices_
     // into the environment. These are _not_ done via Env trait methods to avoid
     // the need to convert, and thus trust (or validate) "raw numbers" coming
@@ -238,7 +236,6 @@ pub trait EnvBase: Sized + Clone {
 /// This trait is used by macro-generated dispatch and forwarding functions to
 /// check arguments being passed to the Env. The default implementations call
 /// through to the Env integrity-checking functions.
-
 pub trait CheckedEnvArg: Sized {
     fn check_env_arg<E: crate::Env>(self, _e: &E) -> Result<Self, E::Error> {
         Ok(self)
@@ -266,6 +263,7 @@ impl_checkedenvarg_for_val_or_wrapper!(Val);
 impl_checkedenvarg_for_val_or_wrapper!(Symbol);
 
 impl_checkedenvarg_for_val_or_wrapper!(AddressObject);
+impl_checkedenvarg_for_val_or_wrapper!(MuxedAddressObject);
 impl_checkedenvarg_for_val_or_wrapper!(BytesObject);
 impl_checkedenvarg_for_val_or_wrapper!(DurationObject);
 
@@ -327,7 +325,7 @@ generate_call_macro_with_all_host_functions!("env.json");
 ///////////////////////////////////////////////////////////////////////////////
 /// X-macro use: defining trait Env
 ///////////////////////////////////////////////////////////////////////////////
-
+//
 // This is a helper macro used only by generate_env_trait below. It consumes
 // a token-tree of the form:
 //

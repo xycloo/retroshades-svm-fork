@@ -1,18 +1,16 @@
-use soroban_env_common::TryIntoVal;
-
 use crate::{
-    err,
+    crypto, err,
     host::{
         metered_clone::{MeteredAlloc, MeteredClone},
         metered_write_xdr, ContractReentryMode,
     },
     vm::Vm,
     xdr::{
-        Asset, ContractCodeEntry, ContractDataDurability, ContractExecutable, ContractIdPreimage,
-        ContractIdPreimageFromAddress, CreateContractArgsV2, ExtensionPoint, Hash, LedgerKey,
-        LedgerKeyContractCode, ScAddress, ScErrorCode, ScErrorType,
+        Asset, ContractCodeEntry, ContractDataDurability, ContractExecutable, ContractId,
+        ContractIdPreimage, ContractIdPreimageFromAddress, CreateContractArgsV2, ExtensionPoint,
+        Hash, LedgerKey, LedgerKeyContractCode, ScAddress, ScErrorCode, ScErrorType,
     },
-    AddressObject, BytesObject, Host, HostError, Symbol, TryFromVal, Val,
+    AddressObject, BytesObject, Host, HostError, Symbol, TryFromVal, TryIntoVal, Val,
 };
 use std::rc::Rc;
 
@@ -23,14 +21,14 @@ impl Host {
     // Notes on metering: this is covered by the called components.
     fn create_contract_with_id(
         &self,
-        contract_id: Hash,
+        contract_id: ContractId,
         contract_executable: ContractExecutable,
     ) -> Result<(), HostError> {
         let storage_key = self.contract_instance_ledger_key(&contract_id)?;
 
         if self
             .try_borrow_storage_mut()?
-            .has_with_host(&storage_key, self, None)?
+            .has(&storage_key, self, None)?
         {
             // RETROSHADES NOTE: when executing the retroshades, the contracts already exist
             // so we need to ignore this error.
@@ -40,7 +38,7 @@ impl Host {
                 ScErrorCode::ExistingValue,
                 "contract already exists",
                 &[self
-                    .add_host_object(self.scbytes_from_hash(&contract_id)?)?
+                    .add_host_object(self.scbytes_from_hash(&contract_id.0)?)?
                     .into()],
             ));*/
         }
@@ -63,7 +61,7 @@ impl Host {
 
     fn call_constructor(
         &self,
-        contract_id: &Hash,
+        contract_id: &ContractId,
         constructor_args: Vec<Val>,
     ) -> Result<(), HostError> {
         // Wasms built for the protocol versions before constructor support
@@ -123,7 +121,7 @@ impl Host {
 
     fn maybe_initialize_stellar_asset_contract(
         &self,
-        contract_id: &Hash,
+        contract_id: &ContractId,
         id_preimage: &ContractIdPreimage,
     ) -> Result<(), HostError> {
         if let ContractIdPreimage::Asset(asset) = id_preimage {
@@ -184,7 +182,7 @@ impl Host {
 
         let id_preimage =
             self.get_full_contract_id_preimage(args.contract_id_preimage.metered_clone(self)?)?;
-        let contract_id = Hash(self.metered_hash_xdr(&id_preimage)?);
+        let contract_id = ContractId(Hash(self.metered_hash_xdr(&id_preimage)?));
         self.create_contract_with_id(contract_id.metered_clone(self)?, args.executable.clone())?;
         self.maybe_initialize_stellar_asset_contract(&contract_id, &args.contract_id_preimage)?;
         if matches!(args.executable, ContractExecutable::Wasm(_)) {
@@ -197,7 +195,7 @@ impl Host {
         &self,
         deployer: AddressObject,
         salt: BytesObject,
-    ) -> Result<Hash, HostError> {
+    ) -> Result<ContractId, HostError> {
         let contract_id_preimage = ContractIdPreimage::Address(ContractIdPreimageFromAddress {
             address: self.visit_obj(deployer, |addr: &ScAddress| addr.metered_clone(self))?,
             salt: self.u256_from_bytesobj_input("contract_id_salt", salt)?,
@@ -205,13 +203,13 @@ impl Host {
 
         let id_preimage =
             self.get_full_contract_id_preimage(contract_id_preimage.metered_clone(self)?)?;
-        Ok(Hash(self.metered_hash_xdr(&id_preimage)?))
+        Ok(ContractId(Hash(self.metered_hash_xdr(&id_preimage)?)))
     }
 
-    pub(crate) fn get_asset_contract_id_hash(&self, asset: Asset) -> Result<Hash, HostError> {
+    pub(crate) fn get_asset_contract_id_hash(&self, asset: Asset) -> Result<ContractId, HostError> {
         let id_preimage = self.get_full_contract_id_preimage(ContractIdPreimage::Asset(asset))?;
         let id_arr: [u8; 32] = self.metered_hash_xdr(&id_preimage)?;
-        Ok(Hash(id_arr))
+        Ok(ContractId(Hash(id_arr)))
     }
 
     pub(crate) fn upload_contract_wasm(&self, wasm: Vec<u8>) -> Result<BytesObject, HostError> {
@@ -253,7 +251,7 @@ impl Host {
         } else {
             let _check_vm = Vm::new(
                 self,
-                Hash(hash_bytes.metered_clone(self)?),
+                ContractId(Hash(hash_bytes.metered_clone(self)?)),
                 wasm_bytes_m.as_slice(),
             )?;
             // At this point we do a secondary parse on what we've checked to be a valid
@@ -281,11 +279,11 @@ impl Host {
 
         // We will definitely put the contract in the ledger if it isn't there yet.
         #[allow(unused_mut)]
-        let mut should_put_contract = !storage.has_with_host(&code_key, self, None)?;
+        let mut should_put_contract = !storage.has(&code_key, self, None)?;
 
         // We may also, in the cache-supporting protocol, overwrite the contract if its ext field changed.
         if !should_put_contract {
-            let entry = storage.get_with_host(&code_key, self, None)?;
+            let entry = storage.get(&code_key, self, None)?;
             if let crate::xdr::LedgerEntryData::ContractCode(ContractCodeEntry {
                 ext: old_ext,
                 ..
@@ -301,7 +299,7 @@ impl Host {
                 ext,
                 code: wasm_bytes_m,
             };
-            storage.put_with_host(
+            storage.put(
                 &code_key,
                 &Host::new_contract_code(self, data)?,
                 Some(self.get_min_live_until_ledger(ContractDataDurability::Persistent)?),
@@ -313,7 +311,6 @@ impl Host {
     }
 }
 
-use super::crypto;
 use super::frame::CallParams;
 #[cfg(any(test, feature = "testutils"))]
 use super::ContractFunctionSet;
@@ -326,6 +323,26 @@ impl Host {
         contract_address: AddressObject,
         contract_fns: Rc<dyn ContractFunctionSet>,
     ) -> Result<(), HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
+        use crate::Env;
+        self.register_test_contract_with_constructor(
+            contract_address,
+            contract_fns,
+            self.vec_new()?,
+        )
+    }
+
+    pub fn register_test_contract_with_constructor(
+        &self,
+        contract_address: AddressObject,
+        contract_fns: Rc<dyn ContractFunctionSet>,
+        constructor_args: crate::VecObject,
+    ) -> Result<(), HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
         let contract_id = self.contract_id_from_address(contract_address)?;
         let instance_key = self.contract_instance_ledger_key(&contract_id)?;
         let wasm_hash_obj = self.upload_contract_wasm(vec![])?;
@@ -341,8 +358,22 @@ impl Host {
             contract_id.clone(),
             &instance_key,
         )?;
-        let mut contracts = self.try_borrow_contracts_mut()?;
-        contracts.insert(contract_id, contract_fns);
-        Ok(())
+        self.try_borrow_contracts_mut()?
+            .insert(contract_id.clone(), contract_fns);
+
+        self.call_constructor(&contract_id, self.call_args_from_obj(constructor_args)?)
+    }
+
+    // This is a test utility that allows calling constructor on a contract that
+    // already exists in the storage. It is incorrect to call this
+    // on a properly instantiated contract (as it must have already had the
+    // constructor executed), but is useful to support manually instantiated
+    // contracts, i.e. those that were created by writing directly into storage.
+    pub fn call_constructor_for_stored_contract_unsafe(
+        &self,
+        contract_id: &ContractId,
+        constructor_args: crate::VecObject,
+    ) -> Result<(), HostError> {
+        self.call_constructor(&contract_id, self.call_args_from_obj(constructor_args)?)
     }
 }

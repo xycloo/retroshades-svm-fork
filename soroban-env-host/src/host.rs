@@ -4,32 +4,34 @@ use std::rc::Rc;
 use crate::{
     auth::AuthorizationManager,
     budget::{AsBudget, Budget},
+    builtin_contracts::common_types::AddressExecutable,
     events::{diagnostic::DiagnosticLevel, Events, InternalEventsBuffer},
-    host_object::{HostMap, HostObject, HostVec},
-    impl_bignum_host_fns, impl_bignum_host_fns_rhs_u32, impl_wrapping_obj_from_num,
-    impl_wrapping_obj_to_num,
+    host_object::{HostMap, HostObject, HostVec, MuxedScAddress},
+    impl_bignum_host_fns, impl_bignum_host_fns_rhs_u32, impl_bls12_381_fr_arith_host_fns,
+    impl_wrapping_obj_from_num, impl_wrapping_obj_to_num,
     num::*,
     storage::Storage,
     vm::ModuleCache,
     xdr::{
         int128_helpers, AccountId, Asset, ContractCostType, ContractEventType, ContractExecutable,
-        ContractIdPreimage, ContractIdPreimageFromAddress, CreateContractArgsV2, Duration, Hash,
-        LedgerEntryData, PublicKey, ScAddress, ScBytes, ScErrorCode, ScErrorType, ScString,
-        ScSymbol, ScVal, TimePoint, Uint256,
+        ContractId, ContractIdPreimage, ContractIdPreimageFromAddress, CreateContractArgsV2,
+        Duration, Hash, LedgerEntryData, PublicKey, ScAddress, ScBytes, ScErrorCode, ScErrorType,
+        ScString, ScSymbol, ScVal, TimePoint, Uint256,
     },
     zephyr::{RetroshadeExport, ZephyrAdapter},
     AddressObject, Bool, BytesObject, Compare, ConversionError, EnvBase, Error, LedgerInfo,
-    MapObject, Object, StorageType, StringObject, Symbol, SymbolObject, TryFromVal, Val, VecObject,
-    VmCaller, VmCallerEnv, Void,
+    MapObject, Object, StorageType, StringObject, Symbol, SymbolObject, SymbolSmall, TryFromVal,
+    TryIntoVal, Val, VecObject, VmCaller, VmCallerEnv, Void,
 };
 
 mod comparison;
 mod conversion;
-pub(crate) mod crypto;
 mod data_helper;
 mod declared_size;
 pub(crate) mod error;
 pub(crate) mod frame;
+#[cfg(any(test, feature = "testutils"))]
+pub mod invocation_metering;
 pub(crate) mod ledger_info_helper;
 pub(crate) mod lifecycle;
 mod mem_helper;
@@ -39,13 +41,14 @@ pub(crate) mod metered_map;
 pub(crate) mod metered_vector;
 pub(crate) mod metered_xdr;
 mod num;
-mod prng;
+pub(crate) mod prng;
 pub(crate) mod trace;
 mod validity;
 
-pub use error::HostError;
+pub use error::{ErrorHandler, HostError};
 use frame::CallParams;
 pub use prng::{Seed, SEED_BYTES};
+use soroban_env_common::MuxedAddressObject;
 pub use trace::{TraceEvent, TraceHook, TraceRecord, TraceState};
 
 use self::{
@@ -62,7 +65,9 @@ pub use frame::ContractFunctionSet;
 pub(crate) use frame::Frame;
 #[cfg(any(test, feature = "recording_mode"))]
 use rand_chacha::ChaCha20Rng;
-use soroban_env_common::SymbolSmall;
+
+#[cfg(any(test, feature = "testutils"))]
+use invocation_metering::InvocationMeter;
 
 #[cfg(any(test, feature = "recording_mode"))]
 use crate::storage::{FootprintMode, SnapshotSource};
@@ -83,19 +88,17 @@ pub struct CoverageScoreboard {
     pub vm_to_vm_calls: usize,
 }
 
-// The soroban 22.x host only supports protocol 22 and later, having
-// adopted a new version of wasmi with a new fuel metering system, it
-// cannot accurately replay earlier contracts. Earlier protocols
-// must run on Soroban 21.x or earlier.
+// The soroban 23.x host only supports protocol 23 and later, having adopted a
+// new module caching strategy, it cannot accurately replay earlier contracts.
+// Earlier protocols must run on Soroban 22.x or earlier.
 
-pub(crate) const MIN_LEDGER_PROTOCOL_VERSION: u32 = 22;
+pub(crate) const MIN_LEDGER_PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Clone, Default)]
 struct HostImpl {
     zephyr_adapter: RefCell<ZephyrAdapter>,
 
     module_cache: RefCell<Option<ModuleCache>>,
-    shared_linker: RefCell<Option<wasmi::Linker<Host>>>,
     source_account: RefCell<Option<AccountId>>,
     ledger: RefCell<Option<LedgerInfo>>,
     objects: RefCell<Vec<HostObject>>,
@@ -116,6 +119,7 @@ struct HostImpl {
     // `with_debug_mode` callback that switches to the shadow budget.
     diagnostic_level: RefCell<DiagnosticLevel>,
     base_prng: RefCell<Option<Prng>>,
+    storage_key_conversion_active: RefCell<bool>,
     // Auth-recording mode generates pseudorandom nonces to populate its output.
     // We'd like these to be deterministic from one run to the next, but also
     // completely isolated from any use of the user-accessible PRNGs (either
@@ -133,7 +137,7 @@ struct HostImpl {
     // but shouldn't be charged to the contract itself (and will never be compiled-in to
     // production hosts)
     #[cfg(any(test, feature = "testutils"))]
-    contracts: RefCell<std::collections::BTreeMap<Hash, Rc<dyn ContractFunctionSet>>>,
+    contracts: RefCell<std::collections::BTreeMap<ContractId, Rc<dyn ContractFunctionSet>>>,
     // Store a copy of the `AuthorizationManager` for the last host function
     // invocation. In order to emulate the production behavior in tests, we reset
     // authorization manager after every invocation (as it's not meant to be
@@ -167,13 +171,8 @@ struct HostImpl {
     #[cfg(any(test, feature = "recording_mode"))]
     suppress_diagnostic_events: RefCell<bool>,
 
-    // This flag marks the call of `build_module_cache` that would happen
-    // in enforcing mode. In recording mode we need to use this flag to
-    // determine whether we need to rebuild module cache after the host
-    // invocation has been done.
-    #[doc(hidden)]
-    #[cfg(any(test, feature = "recording_mode"))]
-    need_to_build_module_cache: RefCell<bool>,
+    #[cfg(any(test, feature = "testutils"))]
+    pub(crate) invocation_meter: RefCell<InvocationMeter>,
 }
 
 // Host is a newtype on Rc<HostImpl> so we can impl Env for it below.
@@ -216,12 +215,6 @@ impl_checked_borrow_helpers!(
     Option<ModuleCache>,
     try_borrow_module_cache,
     try_borrow_module_cache_mut
-);
-impl_checked_borrow_helpers!(
-    shared_linker,
-    Option<wasmi::Linker<Host>>,
-    try_borrow_linker,
-    try_borrow_linker_mut
 );
 impl_checked_borrow_helpers!(
     source_account,
@@ -298,7 +291,7 @@ impl_checked_borrow_helpers!(
 );
 
 #[cfg(any(test, feature = "testutils"))]
-impl_checked_borrow_helpers!(contracts, std::collections::BTreeMap<Hash, Rc<dyn ContractFunctionSet>>, try_borrow_contracts, try_borrow_contracts_mut);
+impl_checked_borrow_helpers!(contracts, std::collections::BTreeMap<ContractId, Rc<dyn ContractFunctionSet>>, try_borrow_contracts, try_borrow_contracts_mut);
 
 #[cfg(any(test, feature = "testutils"))]
 impl_checked_borrow_helpers!(
@@ -313,6 +306,13 @@ impl_checked_borrow_helpers!(
     Option<TraceHook>,
     try_borrow_trace_hook,
     try_borrow_trace_hook_mut
+);
+
+impl_checked_borrow_helpers!(
+    storage_key_conversion_active,
+    bool,
+    try_borrow_storage_key_conversion_active,
+    try_borrow_storage_key_conversion_active_mut
 );
 
 #[cfg(any(test, feature = "testutils"))]
@@ -339,14 +339,6 @@ impl_checked_borrow_helpers!(
     try_borrow_suppress_diagnostic_events_mut
 );
 
-#[cfg(any(test, feature = "recording_mode"))]
-impl_checked_borrow_helpers!(
-    need_to_build_module_cache,
-    bool,
-    try_borrow_need_to_build_module_cache,
-    try_borrow_need_to_build_module_cache_mut
-);
-
 impl Debug for HostImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "HostImpl(...)")
@@ -369,7 +361,6 @@ impl Host {
         Self(Rc::new(HostImpl {
             zephyr_adapter: RefCell::new(ZephyrAdapter::default()),
             module_cache: RefCell::new(None),
-            shared_linker: RefCell::new(None),
             source_account: RefCell::new(None),
             ledger: RefCell::new(None),
             objects: Default::default(),
@@ -382,6 +373,7 @@ impl Host {
             ),
             diagnostic_level: Default::default(),
             base_prng: RefCell::new(None),
+            storage_key_conversion_active: RefCell::new(false),
             #[cfg(any(test, feature = "recording_mode"))]
             recording_auth_nonce_prng: RefCell::new(None),
             #[cfg(any(test, feature = "testutils"))]
@@ -397,19 +389,47 @@ impl Host {
             coverage_scoreboard: Default::default(),
             #[cfg(any(test, feature = "recording_mode"))]
             suppress_diagnostic_events: RefCell::new(false),
-            #[cfg(any(test, feature = "recording_mode"))]
-            need_to_build_module_cache: RefCell::new(false),
+            #[cfg(any(test, feature = "testutils"))]
+            invocation_meter: Default::default(),
         }))
     }
 
-    pub fn build_module_cache_if_needed(&self) -> Result<(), HostError> {
-        if self.try_borrow_module_cache()?.is_none() {
+    #[cfg(any(test, feature = "testutils"))]
+    // This builds a module cache instance for just the contracts stored
+    // in the host's storage map, and is used only in testing.
+    pub fn ensure_module_cache_contains_host_storage_contracts(&self) -> Result<(), HostError> {
+        let mut guard = self.try_borrow_module_cache_mut()?;
+        if let Some(cache) = &*guard {
+            cache.add_stored_contracts(self)?;
+        } else {
             let cache = ModuleCache::new(self)?;
-            let linker = cache.make_linker(self)?;
-            *self.try_borrow_module_cache_mut()? = Some(cache);
-            *self.try_borrow_linker_mut()? = Some(linker);
+            cache.add_stored_contracts(self)?;
+            *guard = Some(cache);
         }
         Ok(())
+    }
+
+    // Install a module cache from _outside_ the Host. Doing this is potentially
+    // delicate: the cache must contain all contracts that will be run by the
+    // host, and will not be further populated during execution.
+    pub fn set_module_cache(&self, cache: ModuleCache) -> Result<(), HostError> {
+        *self.try_borrow_module_cache_mut()? = Some(cache);
+        Ok(())
+    }
+
+    // Remove and return the module cache, to allow reuse in another host. Should
+    // typically only be called during the "finish" sequence of a host's lifecycle,
+    // i.e. when [Self::can_finish] returns `true` and the host is about to be
+    // destroyed.
+    pub fn take_module_cache(&self) -> Result<ModuleCache, HostError> {
+        self.try_borrow_module_cache_mut()?.take().ok_or_else(|| {
+            self.err(
+                ScErrorType::Context,
+                ScErrorCode::InternalError,
+                "missing module cache",
+                &[],
+            )
+        })
     }
 
     #[cfg(any(test, feature = "recording_mode"))]
@@ -436,15 +456,10 @@ impl Host {
 
     #[cfg(any(test, feature = "recording_mode"))]
     pub fn clear_module_cache(&self) -> Result<(), HostError> {
-        *self.try_borrow_module_cache_mut()? = None;
-        *self.try_borrow_linker_mut()? = None;
+        if let Some(cache) = &mut *self.try_borrow_module_cache_mut()? {
+            cache.clear()?;
+        }
         Ok(())
-    }
-
-    #[cfg(any(test, feature = "recording_mode"))]
-    pub fn rebuild_module_cache(&self) -> Result<(), HostError> {
-        self.clear_module_cache()?;
-        self.build_module_cache_if_needed()
     }
 
     pub fn set_source_account(&self, source_account: AccountId) -> Result<(), HostError> {
@@ -757,6 +772,12 @@ impl Host {
         };
         self.create_contract_internal(Some(deployer), args, constructor_args_vec)
     }
+
+    /// Returns true if the Host contains the same instance of HostImpl and therefore changes to
+    /// one will be observable via the other. If true, both are essentially the same Host.
+    pub fn is_same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 macro_rules! call_trace_env_call {
@@ -804,7 +825,8 @@ impl EnvBase for Host {
             | (HostObject::Bytes(_), Tag::BytesObject)
             | (HostObject::String(_), Tag::StringObject)
             | (HostObject::Symbol(_), Tag::SymbolObject)
-            | (HostObject::Address(_), Tag::AddressObject) => Ok(()),
+            | (HostObject::Address(_), Tag::AddressObject)
+            | (HostObject::MuxedAddress(_), Tag::MuxedAddressObject) => Ok(()),
             _ => Err(self.err(
                 xdr::ScErrorType::Value,
                 xdr::ScErrorCode::InvalidInput,
@@ -894,19 +916,6 @@ impl EnvBase for Host {
         res: &Result<&dyn Debug, &HostError>,
     ) -> Result<(), HostError> {
         self.call_any_lifecycle_hook(TraceEvent::EnvRet(fname, res))
-    }
-
-    fn check_same_env(&self, other: &Self) -> Result<(), Self::Error> {
-        if Rc::ptr_eq(&self.0, &other.0) {
-            Ok(())
-        } else {
-            Err(self.err(
-                ScErrorType::Context,
-                ScErrorCode::InternalError,
-                "check_same_env on different Hosts",
-                &[],
-            ))
-        }
     }
 
     fn bytes_copy_from_slice(
@@ -1731,12 +1740,7 @@ impl VmCallerEnv for Host {
             keys_pos,
             len as usize,
             |_n, slice| {
-                // Optimization note: this does an unnecessary `ScVal` roundtrip.
-                // We should just use `Symbol::try_from_val` on the slice instead.
-                self.charge_budget(ContractCostType::MemCpy, Some(slice.len() as u64))?;
-                let scsym = ScSymbol(slice.try_into()?);
-                let sym = Symbol::try_from(self.to_valid_host_val(&ScVal::Symbol(scsym))?)?;
-                key_syms.push(sym);
+                key_syms.push(Symbol::try_from_val(self, &slice)?);
                 Ok(())
             },
         )?;
@@ -2130,8 +2134,7 @@ impl VmCallerEnv for Host {
         let res = match t {
             StorageType::Temporary | StorageType::Persistent => {
                 let key = self.storage_key_from_val(k, t.try_into()?)?;
-                self.try_borrow_storage_mut()?
-                    .has_with_host(&key, self, Some(k))?
+                self.try_borrow_storage_mut()?.has(&key, self, Some(k))?
             }
             StorageType::Instance => {
                 self.with_instance_storage(|s| Ok(s.map.get(&k, self)?.is_some()))?
@@ -2151,9 +2154,7 @@ impl VmCallerEnv for Host {
         match t {
             StorageType::Temporary | StorageType::Persistent => {
                 let key = self.storage_key_from_val(k, t.try_into()?)?;
-                let entry = self
-                    .try_borrow_storage_mut()?
-                    .get_with_host(&key, self, Some(k))?;
+                let entry = self.try_borrow_storage_mut()?.get(&key, self, Some(k))?;
                 match &entry.data {
                     LedgerEntryData::ContractData(e) => Ok(self.to_valid_host_val(&e.val)?),
                     _ => Err(self.err(
@@ -2190,8 +2191,7 @@ impl VmCallerEnv for Host {
         match t {
             StorageType::Temporary | StorageType::Persistent => {
                 let key = self.storage_key_from_val(k, t.try_into()?)?;
-                self.try_borrow_storage_mut()?
-                    .del_with_host(&key, self, Some(k))?;
+                self.try_borrow_storage_mut()?.del(&key, self, Some(k))?;
             }
             StorageType::Instance => {
                 self.with_mut_instance_storage(|s| {
@@ -2371,6 +2371,9 @@ impl VmCallerEnv for Host {
         _vmcaller: &mut VmCaller<Host>,
         wasm: BytesObject,
     ) -> Result<BytesObject, HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
         let wasm_vec =
             self.visit_obj(wasm, |bytes: &ScBytes| bytes.as_vec().metered_clone(self))?;
         self.upload_contract_wasm(wasm_vec)
@@ -2410,6 +2413,9 @@ impl VmCallerEnv for Host {
         func: Symbol,
         args: VecObject,
     ) -> Result<Val, HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
         let argvec = self.call_args_from_obj(args)?;
         // this is the recommended path of calling a contract, with `reentry`
         // always set `ContractReentryMode::Prohibited`
@@ -2437,6 +2443,9 @@ impl VmCallerEnv for Host {
         func: Symbol,
         args: VecObject,
     ) -> Result<Val, HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
         let argvec = self.call_args_from_obj(args)?;
         // this is the "loosened" path of calling a contract.
         // TODO: A `reentry` flag will be passed from `try_call` into here.
@@ -2890,6 +2899,24 @@ impl VmCallerEnv for Host {
         self.add_host_object(self.scbytes_from_vec(vnew)?)
     }
 
+    fn string_to_bytes(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        str: StringObject,
+    ) -> Result<BytesObject, HostError> {
+        let scb = self.visit_obj(str, |s: &ScString| self.scbytes_from_slice(s.as_slice()))?;
+        self.add_host_object(scb)
+    }
+
+    fn bytes_to_string(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        bytes: BytesObject,
+    ) -> Result<StringObject, HostError> {
+        let bytes = self.visit_obj(bytes, |b: &ScBytes| self.metered_slice_to_vec(b.as_slice()))?;
+        self.add_host_object(ScString(bytes.try_into()?))
+    }
+
     // endregion: "buf" module functions
     // region: "crypto" module functions
 
@@ -2955,6 +2982,202 @@ impl VmCallerEnv for Host {
         let msg_hash = self.hash_from_bytesobj_input("msg_digest", msg_digest)?;
         let res = self.secp256r1_verify_signature(&pk, &msg_hash, &sig)?;
         Ok(res.into())
+    }
+
+    fn bls12_381_check_g1_is_in_subgroup(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        pt: BytesObject,
+    ) -> Result<Bool, HostError> {
+        let pt = self.g1_affine_deserialize_from_bytesobj(pt, false)?;
+        self.check_point_is_in_subgroup(&pt, &ContractCostType::Bls12381G1CheckPointInSubgroup)
+            .map(|b| Bool::from(b))
+    }
+
+    fn bls12_381_g1_add(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        p0: BytesObject,
+        p1: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let p0 = self.g1_affine_deserialize_from_bytesobj(p0, false)?;
+        let p1 = self.g1_affine_deserialize_from_bytesobj(p1, false)?;
+        let res = self.g1_add_internal(p0, p1)?;
+        self.g1_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_g1_mul(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        p0: BytesObject,
+        scalar: U256Val,
+    ) -> Result<BytesObject, HostError> {
+        let p0 = self.g1_affine_deserialize_from_bytesobj(p0, true)?;
+        let scalar = self.fr_from_u256val(scalar)?;
+        let res = self.g1_mul_internal(p0, scalar)?;
+        self.g1_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_g1_msm(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        vp: VecObject,
+        vs: VecObject,
+    ) -> Result<BytesObject, HostError> {
+        let points = self.checked_g1_vec_from_vecobj(vp)?;
+        let scalars = self.fr_vec_from_vecobj(vs)?;
+        let res = self.msm_internal(&points, &scalars, &ContractCostType::Bls12381G1Msm, "G1")?;
+        self.g1_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_map_fp_to_g1(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        fp: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let fp = self.fp_deserialize_from_bytesobj(fp)?;
+        let g1 = self.map_to_curve(fp, ContractCostType::Bls12381MapFpToG1)?;
+        self.g1_affine_serialize_uncompressed(&g1)
+    }
+
+    fn bls12_381_hash_to_g1(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        mo: BytesObject,
+        dst: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let g1 = self.visit_obj(mo, |msg: &ScBytes| {
+            self.visit_obj(dst, |dst: &ScBytes| {
+                self.hash_to_curve(
+                    dst.as_slice(),
+                    msg.as_slice(),
+                    &ContractCostType::Bls12381HashToG1,
+                )
+            })
+        })?;
+        self.g1_affine_serialize_uncompressed(&g1)
+    }
+
+    fn bls12_381_check_g2_is_in_subgroup(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        pt: BytesObject,
+    ) -> Result<Bool, HostError> {
+        let pt = self.g2_affine_deserialize_from_bytesobj(pt, false)?;
+        self.check_point_is_in_subgroup(&pt, &ContractCostType::Bls12381G2CheckPointInSubgroup)
+            .map(|b| Bool::from(b))
+    }
+
+    fn bls12_381_g2_add(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        p0: BytesObject,
+        p1: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let p0 = self.g2_affine_deserialize_from_bytesobj(p0, false)?;
+        let p1 = self.g2_affine_deserialize_from_bytesobj(p1, false)?;
+        let res = self.g2_add_internal(p0, p1)?;
+        self.g2_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_g2_mul(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        p0: BytesObject,
+        scalar_le_bytes: U256Val,
+    ) -> Result<BytesObject, HostError> {
+        let p0 = self.g2_affine_deserialize_from_bytesobj(p0, true)?;
+        let scalar = self.fr_from_u256val(scalar_le_bytes)?;
+        let res = self.g2_mul_internal(p0, scalar)?;
+        self.g2_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_g2_msm(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        vp: VecObject,
+        vs: VecObject,
+    ) -> Result<BytesObject, HostError> {
+        let points = self.checked_g2_vec_from_vecobj(vp)?;
+        let scalars = self.fr_vec_from_vecobj(vs)?;
+        let res = self.msm_internal(&points, &scalars, &ContractCostType::Bls12381G2Msm, "G2")?;
+        self.g2_projective_serialize_uncompressed(res)
+    }
+
+    fn bls12_381_map_fp2_to_g2(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        fp2: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let fp2 = self.fp2_deserialize_from_bytesobj(fp2)?;
+        let g2 = self.map_to_curve(fp2, ContractCostType::Bls12381MapFp2ToG2)?;
+        self.g2_affine_serialize_uncompressed(&g2)
+    }
+
+    fn bls12_381_hash_to_g2(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        msg: BytesObject,
+        dst: BytesObject,
+    ) -> Result<BytesObject, HostError> {
+        let g2 = self.visit_obj(msg, |msg: &ScBytes| {
+            self.visit_obj(dst, |dst: &ScBytes| {
+                self.hash_to_curve(
+                    dst.as_slice(),
+                    msg.as_slice(),
+                    &ContractCostType::Bls12381HashToG2,
+                )
+            })
+        })?;
+        self.g2_affine_serialize_uncompressed(&g2)
+    }
+
+    fn bls12_381_multi_pairing_check(
+        &self,
+        vmcaller: &mut VmCaller<Host>,
+        vp1: VecObject,
+        vp2: VecObject,
+    ) -> Result<Bool, HostError> {
+        let l1: u32 = self.vec_len(vmcaller, vp1)?.into();
+        let l2: u32 = self.vec_len(vmcaller, vp2)?.into();
+        if l1 != l2 || l1 == 0 {
+            return Err(self.err(
+                ScErrorType::Crypto,
+                ScErrorCode::InvalidInput,
+                format!("multi-pairing-check: invalid input vector lengths {l1} and {l2}").as_str(),
+                &[],
+            ));
+        }
+        let vp1 = self.checked_g1_vec_from_vecobj(vp1)?;
+        let vp2 = self.checked_g2_vec_from_vecobj(vp2)?;
+        let output = self.pairing_internal(&vp1, &vp2)?;
+        self.check_pairing_output(&output)
+    }
+
+    impl_bls12_381_fr_arith_host_fns!(bls12_381_fr_add, fr_add_internal);
+    impl_bls12_381_fr_arith_host_fns!(bls12_381_fr_sub, fr_sub_internal);
+    impl_bls12_381_fr_arith_host_fns!(bls12_381_fr_mul, fr_mul_internal);
+
+    fn bls12_381_fr_pow(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        lhs: U256Val,
+        rhs: U64Val,
+    ) -> Result<U256Val, Self::Error> {
+        let lhs = self.fr_from_u256val(lhs)?;
+        let rhs = rhs.try_into_val(self)?;
+        let res = self.fr_pow_internal(&lhs, &rhs)?;
+        self.fr_to_u256val(res)
+    }
+
+    fn bls12_381_fr_inv(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        lhs: U256Val,
+    ) -> Result<U256Val, Self::Error> {
+        let lhs = self.fr_from_u256val(lhs)?;
+        let res = self.fr_inv_internal(&lhs)?;
+        self.fr_to_u256val(res)
     }
 
     // endregion: "crypto" module functions
@@ -3038,7 +3261,7 @@ impl VmCallerEnv for Host {
             // version/checksum) and  another one for the base32 encoding of
             // the payload.
             const PAYLOAD_LEN: u64 = 32 + 3;
-            Vec::<u8>::charge_bulk_init_cpy(PAYLOAD_LEN + (PAYLOAD_LEN * 8 + 4) / 5, self)?;
+            Vec::<u8>::charge_bulk_init_cpy(PAYLOAD_LEN + (PAYLOAD_LEN * 8).div_ceil(5), self)?;
             let strkey = match addr {
                 ScAddress::Account(acc_id) => {
                     let AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(ed25519))) = acc_id;
@@ -3047,9 +3270,17 @@ impl VmCallerEnv for Host {
                     );
                     strkey
                 }
-                ScAddress::Contract(Hash(h)) => stellar_strkey::Strkey::Contract(
+                ScAddress::Contract(ContractId(Hash(h))) => stellar_strkey::Strkey::Contract(
                     stellar_strkey::Contract(h.metered_clone(self)?),
                 ),
+                _ => {
+                    return Err(self.err(
+                        ScErrorType::Object,
+                        ScErrorCode::InternalError,
+                        "Unexpected ScAddress type",
+                        &[address.into()],
+                    ))
+                }
             };
             Ok(strkey.to_string())
         })?;
@@ -3083,7 +3314,7 @@ impl VmCallerEnv for Host {
                 }
             };
             const PAYLOAD_LEN: u64 = 32 + 3;
-            let expected_key_len = (PAYLOAD_LEN * 8 + 4) / 5;
+            let expected_key_len = (PAYLOAD_LEN * 8).div_ceil(5);
             if expected_key_len != key.len() as u64 {
                 return Err(self.err(
                     ScErrorType::Value,
@@ -3111,7 +3342,9 @@ impl VmCallerEnv for Host {
                     PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)),
                 ))),
 
-                stellar_strkey::Strkey::Contract(c) => Ok(ScAddress::Contract(Hash(c.0))),
+                stellar_strkey::Strkey::Contract(c) => {
+                    Ok(ScAddress::Contract(ContractId(Hash(c.0))))
+                }
                 _ => {
                     return Err(self.err(
                         ScErrorType::Value,
@@ -3125,6 +3358,90 @@ impl VmCallerEnv for Host {
         self.add_host_object(sc_addr)
     }
 
+    fn get_address_from_muxed_address(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        muxed_address: MuxedAddressObject,
+    ) -> Result<AddressObject, Self::Error> {
+        let sc_address = self.visit_obj(muxed_address, |addr: &MuxedScAddress| match &addr.0 {
+            ScAddress::MuxedAccount(muxed_account) => {
+                let address = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+                    muxed_account.ed25519.metered_clone(self)?,
+                )));
+                Ok(address)
+            }
+            _ => Err(self.err(
+                ScErrorType::Object,
+                ScErrorCode::InternalError,
+                "MuxedAddressObject is used to represent a regular address",
+                &[muxed_address.into()],
+            )),
+        })?;
+        self.add_host_object(sc_address)
+    }
+
+    fn get_id_from_muxed_address(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        muxed_address: MuxedAddressObject,
+    ) -> Result<U64Val, Self::Error> {
+        let mux_id = self.visit_obj(muxed_address, |addr: &MuxedScAddress| match &addr.0 {
+            ScAddress::MuxedAccount(muxed_account) => Ok(muxed_account.id),
+            _ => Err(self.err(
+                ScErrorType::Object,
+                ScErrorCode::InternalError,
+                "MuxedAddressObject is used to represent a regular address",
+                &[muxed_address.into()],
+            )),
+        })?;
+        Ok(U64Val::try_from_val(self, &mux_id)?)
+    }
+    fn get_address_executable(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        address: AddressObject,
+    ) -> Result<Val, Self::Error> {
+        let sc_address = self.scaddress_from_address(address)?;
+        let maybe_executable = match sc_address {
+            ScAddress::Account(account_id) => {
+                let key = self.to_account_key(account_id)?;
+                if self.try_borrow_storage_mut()?.has(&key, &self, None)? {
+                    Some(AddressExecutable::Account)
+                } else {
+                    None
+                }
+            }
+            ScAddress::Contract(id) => {
+                let storage_key = self.contract_instance_ledger_key(&id)?;
+                let maybe_instance_entry =
+                    self.try_borrow_storage_mut()?
+                        .try_get_full(&storage_key, self, None)?;
+                if let Some((instance_entry, _ttl)) = maybe_instance_entry {
+                    let instance =
+                        self.extract_contract_instance_from_ledger_entry(&instance_entry)?;
+                    Some(AddressExecutable::from_contract_executable_xdr(
+                        &self,
+                        &instance.executable,
+                    )?)
+                } else {
+                    None
+                }
+            }
+            _ => {
+                return Err(self.err(
+                    ScErrorType::Object,
+                    ScErrorCode::InternalError,
+                    "Unexpected Address variant in get_address_executable",
+                    &[address.into()],
+                ));
+            }
+        };
+        if let Some(exec) = maybe_executable {
+            Val::try_from_val(self, &exec)
+        } else {
+            Ok(Val::VOID.into())
+        }
+    }
     // endregion: "address" module functions
     // region: "prng" module functions
 
@@ -3197,7 +3514,7 @@ impl Host {
     // Testing interface to create values directly for later use via Env functions.
     // It needs to be a `pub` method because benches are considered a separate crate.
     pub fn inject_val(&self, v: &ScVal) -> Result<Val, HostError> {
-        self.to_host_val(v).map(Into::into)
+        self.to_host_val(v)
     }
 }
 
@@ -3321,6 +3638,31 @@ impl Host {
                 &[key],
             )
         })
+    }
+
+    /// Returns the resources metered during the last logical contract invocation.
+    ///
+    /// Logical invocations include the direct `invoke_host_function` calls,
+    /// `call`/`try_call` functions, contract lifecycle management operations.
+    ///
+    /// Take the return value with a grain of salt. The returned resources mostly
+    /// correspond only to the operations that have happened during the host
+    /// invocation, i.e. this won't try to simulate the work that happens in
+    /// production scenarios (e.g. certain XDR rountrips). This also doesn't try
+    /// to model resources related to the transaction size.
+    ///
+    /// The returned value is as useful as the preceding setup, e.g. if a test
+    /// contract is used instead of a Wasm contract, all the costs related to
+    /// VM instantiation and execution, as well as Wasm reads/rent bumps will be
+    /// missed.
+    pub fn get_last_invocation_resources(
+        &self,
+    ) -> Option<invocation_metering::InvocationResources> {
+        if let Ok(scope) = self.0.invocation_meter.try_borrow() {
+            scope.get_invocation_resources()
+        } else {
+            None
+        }
     }
 }
 

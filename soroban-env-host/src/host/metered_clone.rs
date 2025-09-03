@@ -21,11 +21,12 @@ use std::{cell::RefCell, mem, rc::Rc};
 use crate::{
     budget::{AsBudget, DepthLimiter},
     builtin_contracts::base_types::Address,
+    host_object::MuxedScAddress,
     storage::AccessType,
     xdr::{
         AccountEntry, AccountId, Asset, BytesM, ContractCodeCostInputs, ContractCodeEntry,
         ContractCodeEntryExt, ContractCodeEntryV1, ContractCostType, ContractExecutable,
-        ContractIdPreimage, CreateContractArgs, CreateContractArgsV2, Duration, Hash,
+        ContractId, ContractIdPreimage, CreateContractArgs, CreateContractArgsV2, Duration, Hash,
         InvokeContractArgs, LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey,
         LedgerKeyAccount, LedgerKeyContractCode, LedgerKeyTrustLine, PublicKey, ScAddress, ScBytes,
         ScContractInstance, ScErrorCode, ScErrorType, ScMap, ScMapEntry, ScNonceKey, ScString,
@@ -57,7 +58,8 @@ pub(crate) fn charge_shallow_copy<T: DeclaredSizeForMetering>(
     // means an underestimation of the cost.
     debug_assert!(
         mem::size_of::<T>() as u64 <= T::DECLARED_SIZE,
-        "mem size: {}, declared: {}",
+        "{}: mem size: {}, declared: {}",
+        std::any::type_name::<T>(),
         std::mem::size_of::<T>(),
         T::DECLARED_SIZE
     );
@@ -77,7 +79,8 @@ pub(crate) fn charge_heap_alloc<T: DeclaredSizeForMetering>(
     // budget charging.
     debug_assert!(
         mem::size_of::<T>() as u64 <= T::DECLARED_SIZE,
-        "mem size: {}, declared: {}",
+        "{}: mem size: {}, declared: {}",
+        std::any::type_name::<T>(),
         std::mem::size_of::<T>(),
         T::DECLARED_SIZE
     );
@@ -250,6 +253,7 @@ pub trait MeteredClone: Clone + DeclaredSizeForMetering {
 }
 
 // region: primitive types
+impl MeteredClone for () {}
 impl MeteredClone for u8 {}
 impl MeteredClone for u32 {}
 impl MeteredClone for i32 {}
@@ -314,12 +318,14 @@ impl MeteredClone for AccessType {}
 impl MeteredClone for TimePoint {}
 impl MeteredClone for Duration {}
 impl MeteredClone for Hash {}
+impl MeteredClone for ContractId {}
 impl MeteredClone for Uint256 {}
 impl MeteredClone for ContractCodeCostInputs {}
 impl MeteredClone for ContractCodeEntryV1 {}
 impl MeteredClone for ContractExecutable {}
 impl MeteredClone for AccountId {}
 impl MeteredClone for ScAddress {}
+impl MeteredClone for MuxedScAddress {}
 impl MeteredClone for ScNonceKey {}
 impl MeteredClone for PublicKey {}
 impl MeteredClone for TrustLineAsset {}
@@ -340,6 +346,10 @@ impl MeteredClone for Asset {}
 
 // cloning Rc is just a ref-count bump
 impl<T> MeteredClone for Rc<T> {}
+
+// cloning Arc is just an _atomic_ ref-count bump, but still O(1)
+// too cheap to meter. We don't use Arcs very much.
+impl<T> MeteredClone for std::sync::Arc<T> {}
 
 // cloning a RefCell clones its underlying data structure
 impl<T: MeteredClone> MeteredClone for RefCell<T> {

@@ -218,7 +218,7 @@ fn contract_failure_with_debug_on_off_affects_no_metering() -> Result<(), HostEr
 
     let invoke_cross_contract_indirect_with_err = || -> Result<(u64, u64, u64, u64), HostError> {
         // try call -- add will trap, and add_with will trap, but we will get an error
-        host.rebuild_module_cache()?;
+        host.ensure_module_cache_contains_host_storage_contracts()?;
         host.as_budget().reset_default()?;
         let res = host.try_call(id0_obj, sym, args);
         HostError::result_matches_err(
@@ -277,15 +277,28 @@ impl ReturnContractError {
     const ERR: Error = Error::from_contract_error(12345);
 }
 impl ContractFunctionSet for ReturnContractError {
-    fn call(&self, _func: &Symbol, _host: &Host, _args: &[Val]) -> Option<Val> {
-        Some(Self::ERR.into())
+    fn call(&self, func: &Symbol, host: &Host, _args: &[Val]) -> Option<Val> {
+        if host
+            .compare(
+                &host.symbol_new_from_slice(b"__constructor").unwrap().into(),
+                func,
+            )
+            .unwrap()
+            .is_ne()
+        {
+            Some(Self::ERR.into())
+        } else {
+            Some(().into())
+        }
     }
 }
 
 #[test]
 fn native_invoke_return_err_variants() -> Result<(), HostError> {
     let host = observe_host!(Host::test_host_with_recording_footprint());
-    let addr = host.add_host_object(xdr::ScAddress::Contract(xdr::Hash([0; 32])))?;
+    let addr = host.add_host_object(xdr::ScAddress::Contract(xdr::ContractId(xdr::Hash(
+        [0; 32],
+    ))))?;
     host.register_test_contract(addr, Rc::new(ReturnContractError))?;
 
     let sym = Symbol::try_from_small_str("go")?;

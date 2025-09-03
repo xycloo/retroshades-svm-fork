@@ -149,8 +149,10 @@ pub enum Tag {
     /// Tag for a [Val] that refers to a host-side contract address.
     AddressObject = 77,
 
+    MuxedAddressObject = 78,
+
     /// Code delimiting the upper boundary of "object" types.
-    ObjectCodeUpperBound = 78,
+    ObjectCodeUpperBound = 79,
 
     /// Code reserved to indicate mis-tagged [`Val`]s.
     Bad = 0x7f,
@@ -238,6 +240,7 @@ impl Tag {
             Tag::VecObject => Some(ScValType::Vec),
             Tag::MapObject => Some(ScValType::Map),
             Tag::AddressObject => Some(ScValType::Address),
+            Tag::MuxedAddressObject => Some(ScValType::Address),
             Tag::ObjectCodeUpperBound => None,
             Tag::Bad => None,
         }
@@ -272,6 +275,13 @@ impl<E: Env> TryFromVal<E, Val> for Val {
     type Error = ConversionError;
     fn try_from_val(_env: &E, val: &Val) -> Result<Self, Self::Error> {
         Ok(*val)
+    }
+}
+
+impl<E: Env> TryFromVal<E, &Val> for Val {
+    type Error = ConversionError;
+    fn try_from_val(_env: &E, val: &&Val) -> Result<Self, Self::Error> {
+        Ok(**val)
     }
 }
 
@@ -330,6 +340,7 @@ impl<E: Env> Compare<Bool> for E {
 declare_tag_based_object_wrapper!(VecObject);
 declare_tag_based_object_wrapper!(MapObject);
 declare_tag_based_object_wrapper!(AddressObject);
+declare_tag_based_object_wrapper!(MuxedAddressObject);
 
 // This is a 0-arg struct rather than an enum to ensure it completely compiles
 // away, the same way `()` would, while remaining a separate type to allow
@@ -404,14 +415,14 @@ impl_tryfroms_and_tryfromvals_delegating_to_valconvert!(Error);
 
 #[cfg(feature = "wasmi")]
 pub trait WasmiMarshal: Sized {
-    fn try_marshal_from_value(v: wasmi::Val) -> Option<Self>;
-    fn marshal_from_self(self) -> wasmi::Val;
+    fn try_marshal_from_value(v: wasmi::Value) -> Option<Self>;
+    fn marshal_from_self(self) -> wasmi::Value;
 }
 
 #[cfg(feature = "wasmi")]
 impl WasmiMarshal for Val {
-    fn try_marshal_from_value(v: wasmi::Val) -> Option<Self> {
-        if let wasmi::Val::I64(i) = v {
+    fn try_marshal_from_value(v: wasmi::Value) -> Option<Self> {
+        if let wasmi::Value::I64(i) = v {
             let v = Val::from_payload(i as u64);
             if v.is_good() {
                 Some(v)
@@ -423,38 +434,38 @@ impl WasmiMarshal for Val {
         }
     }
 
-    fn marshal_from_self(self) -> wasmi::Val {
-        wasmi::Val::I64(self.get_payload() as i64)
+    fn marshal_from_self(self) -> wasmi::Value {
+        wasmi::Value::I64(self.get_payload() as i64)
     }
 }
 
 #[cfg(feature = "wasmi")]
 impl WasmiMarshal for u64 {
-    fn try_marshal_from_value(v: wasmi::Val) -> Option<Self> {
-        if let wasmi::Val::I64(i) = v {
+    fn try_marshal_from_value(v: wasmi::Value) -> Option<Self> {
+        if let wasmi::Value::I64(i) = v {
             Some(i as u64)
         } else {
             None
         }
     }
 
-    fn marshal_from_self(self) -> wasmi::Val {
-        wasmi::Val::I64(self as i64)
+    fn marshal_from_self(self) -> wasmi::Value {
+        wasmi::Value::I64(self as i64)
     }
 }
 
 #[cfg(feature = "wasmi")]
 impl WasmiMarshal for i64 {
-    fn try_marshal_from_value(v: wasmi::Val) -> Option<Self> {
-        if let wasmi::Val::I64(i) = v {
+    fn try_marshal_from_value(v: wasmi::Value) -> Option<Self> {
+        if let wasmi::Value::I64(i) = v {
             Some(i)
         } else {
             None
         }
     }
 
-    fn marshal_from_self(self) -> wasmi::Val {
-        wasmi::Val::I64(self)
+    fn marshal_from_self(self) -> wasmi::Value {
+        wasmi::Value::I64(self)
     }
 }
 
@@ -678,7 +689,8 @@ impl Val {
             | Tag::SymbolObject
             | Tag::VecObject
             | Tag::MapObject
-            | Tag::AddressObject => self.has_minor(0),
+            | Tag::AddressObject
+            | Tag::MuxedAddressObject => self.has_minor(0),
         }
     }
 
@@ -859,6 +871,7 @@ impl Debug for Val {
             Tag::VecObject => fmt_obj("Vec", self, f),
             Tag::MapObject => fmt_obj("Map", self, f),
             Tag::AddressObject => fmt_obj("Address", self, f),
+            Tag::MuxedAddressObject => fmt_obj("MuxedAddress", self, f),
 
             Tag::Bad
             | Tag::SmallCodeUpperBound

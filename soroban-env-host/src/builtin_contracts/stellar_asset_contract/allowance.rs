@@ -6,7 +6,7 @@ use crate::{
     },
     err,
     host::{metered_clone::MeteredClone, Host},
-    Env, HostError, StorageType, TryIntoVal,
+    Env, ErrorHandler, HostError, StorageType, TryIntoVal,
 };
 
 use super::storage_types::AllowanceValue;
@@ -97,7 +97,7 @@ pub(crate) fn write_allowance(
             if allowance_with_live_until.0.amount > 0
                 && allowance_with_live_until.1.unwrap_or(0) < live_until
             {
-                let live_for = live_until.saturating_sub(ledger_seq).saturating_add(1);
+                let live_for = live_until.saturating_sub(ledger_seq);
                 e.extend_contract_data_ttl(
                     key.try_into_val(e)?,
                     StorageType::Temporary,

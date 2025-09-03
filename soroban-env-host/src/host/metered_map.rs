@@ -7,11 +7,23 @@ use crate::{
 
 use std::{borrow::Borrow, cmp::Ordering, marker::PhantomData};
 
+use super::metered_vector::binary_search_by_pre_rust_182;
+
 const MAP_OOB: Error = Error::from_type_and_code(ScErrorType::Object, ScErrorCode::IndexBounds);
 
 pub struct MeteredOrdMap<K, V, Ctx> {
     pub(crate) map: Vec<(K, V)>,
-    ctx: PhantomData<Ctx>,
+    // This is PhantomData<fn(Ctx)> instead of PhantomData<Ctx> because we just
+    // want MeteredOrdMap<Budget> to require Budget when doing operations, not
+    // pretend it's carrying one. If we used PhantomData<Ctx> then we'd make
+    // MeteredOrdMap non-Send/Sync, which would prevent its use in the
+    // ModuleCache.
+    //
+    // See
+    // https://doc.rust-lang.org/nomicon/phantom-data.html#table-of-phantomdata-patterns
+    // for discussion of the ways you can use PhantomData to precisely model
+    // various sorts of constraints.
+    ctx: PhantomData<fn(Ctx)>,
 }
 
 /// `Clone` should not be used directly, used `MeteredClone` instead if
@@ -161,7 +173,7 @@ where
         let _span = tracy_span!("map lookup");
         self.charge_binsearch(ctx)?;
         let mut err: Option<HostError> = None;
-        let res = self.map.binary_search_by(|probe| {
+        let res = binary_search_by_pre_rust_182(self.map.as_slice(), |probe| {
             // We've already hit an error, return Ordering::Equal
             // to terminate search asap.
             if err.is_some() {

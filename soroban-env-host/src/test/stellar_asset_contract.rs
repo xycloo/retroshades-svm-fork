@@ -19,10 +19,11 @@ use crate::{
     testutils::generate_bytes_array,
     xdr::{
         self, AccountFlags, AccountId, AlphaNum12, AlphaNum4, Asset, AssetCode12, AssetCode4,
-        ContractEventType, ContractExecutable, Hash, InvokeContractArgs, LedgerEntryData,
-        LedgerKey, Liabilities, PublicKey, ScAddress, ScContractInstance, ScErrorCode, ScErrorType,
-        ScSymbol, ScVal, SorobanAuthorizedFunction, SorobanAuthorizedInvocation, TrustLineEntry,
-        TrustLineEntryExt, TrustLineEntryV1, TrustLineEntryV1Ext, TrustLineFlags,
+        ContractEventType, ContractExecutable, ContractId, Hash, InvokeContractArgs,
+        LedgerEntryData, LedgerKey, Liabilities, PublicKey, ScAddress, ScContractInstance,
+        ScErrorCode, ScErrorType, ScSymbol, ScVal, SorobanAuthorizedFunction,
+        SorobanAuthorizedInvocation, TrustLineEntry, TrustLineEntryExt, TrustLineEntryV1,
+        TrustLineEntryV1Ext, TrustLineFlags,
     },
     Env, EnvBase, Host, HostError, LedgerInfo, Symbol, TryFromVal, TryIntoVal, Val,
 };
@@ -79,14 +80,14 @@ impl StellarAssetContractTest {
     fn default_stellar_asset_contract_with_admin_id(
         &self,
         new_admin: &Address,
-    ) -> TestStellarAssetContract {
+    ) -> TestStellarAssetContract<'_> {
         let contract = self.default_stellar_asset_contract();
         let issuer = TestSigner::account(&self.issuer_key);
         contract.set_admin(&issuer, new_admin.clone()).unwrap();
         contract
     }
 
-    fn default_stellar_asset_contract(&self) -> TestStellarAssetContract {
+    fn default_stellar_asset_contract(&self) -> TestStellarAssetContract<'_> {
         let issuer_id = signing_key_to_account_id(&self.issuer_key);
         self.create_account(
             &issuer_id,
@@ -145,12 +146,10 @@ impl StellarAssetContractTest {
 
     fn get_trustline_balance(&self, key: &Rc<LedgerKey>) -> i64 {
         self.host
-            .with_mut_storage(
-                |s| match &s.get_with_host(key, &self.host, None).unwrap().data {
-                    LedgerEntryData::Trustline(trustline) => Ok(trustline.balance),
-                    _ => unreachable!(),
-                },
-            )
+            .with_mut_storage(|s| match &s.get(key, &self.host, None).unwrap().data {
+                LedgerEntryData::Trustline(trustline) => Ok(trustline.balance),
+                _ => unreachable!(),
+            })
             .unwrap()
     }
     #[allow(clippy::too_many_arguments)]
@@ -183,7 +182,7 @@ impl StellarAssetContractTest {
     fn update_account_flags(&self, key: &Rc<LedgerKey>, new_flags: u32) {
         self.host
             .with_mut_storage(|s| {
-                let entry = s.get_with_host(key, &self.host, None).unwrap();
+                let entry = s.get(key, &self.host, None).unwrap();
                 match entry.data.clone() {
                     LedgerEntryData::Account(mut account) => {
                         account.flags = new_flags;
@@ -192,7 +191,7 @@ impl StellarAssetContractTest {
                             &entry,
                             LedgerEntryData::Account(account),
                         )?;
-                        s.put_with_host(key, &update, None, &self.host, None)
+                        s.put(key, &update, None, &self.host, None)
                     }
                     _ => unreachable!(),
                 }
@@ -261,7 +260,7 @@ impl StellarAssetContractTest {
     fn update_trustline_flags(&self, key: &Rc<LedgerKey>, new_flags: u32) {
         self.host
             .with_mut_storage(|s| {
-                let entry = s.get_with_host(key, &self.host, None).unwrap();
+                let entry = s.get(key, &self.host, None).unwrap();
                 match entry.data.clone() {
                     LedgerEntryData::Trustline(mut trustline) => {
                         trustline.flags = new_flags;
@@ -270,7 +269,7 @@ impl StellarAssetContractTest {
                             &entry,
                             LedgerEntryData::Trustline(trustline),
                         )?;
-                        s.put_with_host(key, &update, None, &self.host, None)
+                        s.put(key, &update, None, &self.host, None)
                     }
                     _ => unreachable!(),
                 }
@@ -289,7 +288,7 @@ impl StellarAssetContractTest {
     {
         self.host.with_frame(
             Frame::TestContract(TestContractFrame::new(
-                Hash(contract_id_bytes.to_array().unwrap()),
+                ContractId(Hash(contract_id_bytes.to_array().unwrap())),
                 Symbol::try_from_small_str("foo").unwrap(),
                 vec![],
                 ScContractInstance {
@@ -607,6 +606,246 @@ fn test_direct_transfer() {
 }
 
 #[test]
+fn test_transfer_with_issuer() {
+    let test: StellarAssetContractTest = StellarAssetContractTest::setup(function_name!());
+    // Enable invocation metering to get the events to reset automatically on
+    // every contract call.
+    test.host.enable_invocation_metering();
+    let issuer = TestSigner::account(&test.issuer_key);
+    let contract = test.default_stellar_asset_contract();
+
+    let user = TestSigner::account(&test.user_key);
+    let user_2 = TestSigner::account(&test.user_key_2);
+    test.create_default_account(&user);
+    test.create_default_account(&user_2);
+    test.create_default_trustline(&user);
+    test.create_default_trustline(&user_2);
+    let token_name = contract.name().unwrap();
+
+    // Mint with issuer
+    contract
+        .transfer(&issuer, user.address(&test.host), 100)
+        .unwrap();
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                Symbol::try_from_small_str("mint").unwrap().to_val(),
+                user.address(&test.host),
+                &token_name,
+            ],
+            100_i128.try_into_val(&test.host).unwrap()
+        )]
+    );
+
+    assert_eq!(contract.balance(user.address(&test.host)).unwrap(), 100);
+    assert_eq!(
+        contract.balance(issuer.address(&test.host)).unwrap(),
+        i128::from(i64::MAX)
+    );
+
+    // Transfer between two trustlines
+    contract
+        .transfer(&user, user_2.address(&test.host), 50)
+        .unwrap();
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                Symbol::try_from_small_str("transfer").unwrap().to_val(),
+                user.address(&test.host),
+                user_2.address(&test.host),
+                &token_name,
+            ],
+            50_i128.try_into_val(&test.host).unwrap()
+        )]
+    );
+
+    // Burn by sending to issuer
+    contract
+        .transfer(&user, issuer.address(&test.host), 50)
+        .unwrap();
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                Symbol::try_from_small_str("burn").unwrap().to_val(),
+                user.address(&test.host),
+                &token_name,
+            ],
+            50_i128.try_into_val(&test.host).unwrap()
+        )]
+    );
+
+    assert_eq!(contract.balance(user.address(&test.host)).unwrap(), 0);
+    assert_eq!(contract.balance(user_2.address(&test.host)).unwrap(), 50);
+    assert_eq!(
+        contract.balance(issuer.address(&test.host)).unwrap(),
+        i128::from(i64::MAX)
+    );
+
+    // Issuer transfers to self
+    contract
+        .transfer(&issuer, issuer.address(&test.host), i64::MAX.into())
+        .unwrap();
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                Symbol::try_from_small_str("transfer").unwrap().to_val(),
+                issuer.address(&test.host),
+                issuer.address(&test.host),
+                &token_name,
+            ],
+            (i64::MAX as i128).try_into_val(&test.host).unwrap()
+        )]
+    );
+}
+
+#[test]
+fn test_cap_67_transfer_with_muxed_accounts() {
+    let test = StellarAssetContractTest::setup(function_name!());
+    // Enable invocation metering to get the events to reset automatically on
+    // every contract call.
+    test.host.enable_invocation_metering();
+    let admin = TestSigner::account(&test.issuer_key);
+    let contract = test.default_stellar_asset_contract();
+
+    let user = TestSigner::account(&test.user_key);
+    let user_2 = TestSigner::account(&test.user_key_2);
+    test.create_default_account(&user);
+    test.create_default_account(&user_2);
+    test.create_default_trustline(&user);
+    test.create_default_trustline(&user_2);
+
+    contract
+        .mint(&admin, user.address(&test.host), 100_000_000)
+        .unwrap();
+
+    let transfer_symbol = Symbol::try_from_small_str("transfer").unwrap().to_val();
+    let token_name = contract.name().unwrap();
+
+    // Transfer some balance from user 1 to user 2, both source and destination
+    // are muxed.
+    contract
+        .transfer_muxed(
+            &user,
+            user_2.muxed_address(&test.host, Some(567_890)),
+            9_999_999,
+        )
+        .unwrap();
+
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                transfer_symbol,
+                user.address(&test.host),
+                user_2.address(&test.host),
+                &token_name,
+            ],
+            test_map![
+                &test.host,
+                ("amount", 9_999_999_i128),
+                ("to_muxed_id", 567_890_u64)
+            ]
+            .into()
+        )]
+    );
+    assert_eq!(
+        contract.balance(user.address(&test.host)).unwrap(),
+        90_000_001
+    );
+    assert_eq!(
+        contract.balance(user_2.address(&test.host)).unwrap(),
+        9_999_999
+    );
+
+    // Transfer some balance from user 1 (non-muxed) to user 2, different
+    // muxed destination.
+    contract
+        .transfer_muxed(&user, user_2.muxed_address(&test.host, Some(u64::MAX)), 1)
+        .unwrap();
+
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                transfer_symbol,
+                user.address(&test.host),
+                user_2.address(&test.host),
+                &token_name,
+            ],
+            test_map![&test.host, ("amount", 1_i128), ("to_muxed_id", u64::MAX)].into()
+        )]
+    );
+    assert_eq!(
+        contract.balance(user.address(&test.host)).unwrap(),
+        90_000_000
+    );
+    assert_eq!(
+        contract.balance(user_2.address(&test.host)).unwrap(),
+        10_000_000
+    );
+
+    // Transfer from user 2 (non-muxed) to user 1 (non-muxed).
+    contract
+        .transfer_muxed(&user_2, user.muxed_address(&test.host, None), 5_000_000)
+        .unwrap();
+
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                transfer_symbol,
+                user_2.address(&test.host),
+                user.address(&test.host),
+                &token_name,
+            ],
+            5_000_000_i128.try_into_val(&test.host).unwrap()
+        )]
+    );
+    assert_eq!(
+        contract.balance(user.address(&test.host)).unwrap(),
+        95_000_000
+    );
+    assert_eq!(
+        contract.balance(user_2.address(&test.host)).unwrap(),
+        5_000_000
+    );
+
+    // Transfer from issuer to user 2 (muxed). This will emit a mint event
+    contract
+        .transfer_muxed(&admin, user_2.muxed_address(&test.host, Some(1)), 2)
+        .unwrap();
+
+    let mint_symbol = Symbol::try_from_small_str("mint").unwrap().to_val();
+    assert_eq!(
+        test.host.get_events().unwrap().0,
+        vec![contract.test_event(
+            test_vec![
+                &test.host,
+                mint_symbol,
+                user_2.address(&test.host),
+                &token_name,
+            ],
+            test_map![&test.host, ("amount", 2_i128), ("to_muxed_id", 1u64)].into()
+        )]
+    );
+    assert_eq!(
+        contract.balance(user_2.address(&test.host)).unwrap(),
+        5_000_002
+    );
+}
+
+#[test]
 fn test_transfer_with_allowance() {
     let test = StellarAssetContractTest::setup(function_name!());
     let admin = TestSigner::account(&test.issuer_key);
@@ -890,6 +1129,75 @@ fn test_allowance_live_until() {
             .allowance(user.address(&test.host), user_2.address(&test.host))
             .unwrap(),
         10_000
+    );
+
+    // Create an allowance with maximum possible lifetime.
+    contract
+        .approve(
+            &user,
+            user_2.address(&test.host),
+            10,
+            test.host.max_live_until_ledger().unwrap(),
+        )
+        .unwrap();
+    // Advance ledger to to the maximum ledger the allowance is valid for.
+    test.host
+        .with_mut_ledger_info(|li| {
+            li.sequence_number = li.max_live_until_ledger_checked().unwrap();
+        })
+        .unwrap();
+
+    assert_eq!(
+        contract
+            .allowance(user.address(&test.host), user_2.address(&test.host))
+            .unwrap(),
+        10,
+    );
+
+    contract
+        .transfer_from(
+            &user_2,
+            user.address(&test.host),
+            user_2.address(&test.host),
+            5,
+        )
+        .unwrap();
+
+    // Advance ledger num by one more ledger. Allowance should no longer be valid.
+    test.host
+        .with_mut_ledger_info(|li| li.sequence_number = li.sequence_number + 1)
+        .unwrap();
+
+    assert_eq!(
+        to_contract_err(
+            contract
+                .transfer_from(
+                    &user_2,
+                    user.address(&test.host),
+                    user_2.address(&test.host),
+                    1,
+                )
+                .err()
+                .unwrap()
+        ),
+        ContractError::AllowanceError
+    );
+
+    // It's not possible to create an allowance that lives for longer than
+    // max TTL allows.
+    assert_eq!(
+        to_contract_err(
+            contract
+                .approve(
+                    &user,
+                    user_2.address(&test.host),
+                    10,
+                    test.host.max_live_until_ledger().unwrap() + 1,
+                )
+                .err()
+                .unwrap()
+        ),
+        ContractError::AllowanceError
     );
 }
 
@@ -1197,6 +1505,116 @@ fn test_clawback_on_account() {
 }
 
 #[test]
+fn test_greater_than_i64_balances() {
+    let test = StellarAssetContractTest::setup(function_name!());
+    let admin = TestSigner::account(&test.issuer_key);
+    let contract = test.default_stellar_asset_contract();
+
+    let user = TestSigner::account(&test.user_key);
+    test.create_default_account(&user);
+
+    let transfer_contract_id_obj: soroban_env_common::AddressObject = test
+        .host
+        .register_test_contract_wasm(soroban_test_wasms::CONTRACT_SAC_TRANSFER_CONTRACT_P23);
+
+    let transfer_contract_addr: Address =
+        Address::try_from_val(&test.host, &transfer_contract_id_obj).unwrap();
+
+    for n in 1..4 {
+        contract
+            .mint(&admin, transfer_contract_addr.clone(), i64::MAX.into())
+            .unwrap();
+
+        assert_eq!(
+            contract.balance(transfer_contract_addr.clone()).unwrap(),
+            (i64::MAX as i128) * n
+        );
+    }
+
+    let _ = &test
+        .host
+        .call(
+            transfer_contract_id_obj,
+            Symbol::try_from_val(&test.host, &"transfer_amount").unwrap(),
+            test_vec![
+                &test.host,
+                contract.address,
+                contract.address,
+                (i64::MAX as i128) * 2
+            ]
+            .into(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        contract.balance(transfer_contract_addr.clone()).unwrap(),
+        (i64::MAX as i128) * 1
+    );
+    assert_eq!(
+        contract.balance(contract.address.clone()).unwrap(),
+        (i64::MAX as i128) * 2
+    );
+
+    // Try to transfer more than available
+    assert_eq!(
+        to_contract_err(
+            test.host
+                .call(
+                    transfer_contract_id_obj,
+                    Symbol::try_from_val(&test.host, &"transfer_amount").unwrap(),
+                    test_vec![
+                        &test.host,
+                        contract.address,
+                        contract.address,
+                        (i64::MAX as i128) + 1
+                    ]
+                    .into()
+                )
+                .err()
+                .unwrap()
+        ),
+        ContractError::BalanceError
+    );
+
+    contract
+        .mint(
+            &admin,
+            transfer_contract_addr.clone(),
+            (i128::MAX - i64::MAX as i128).into(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        contract.balance(transfer_contract_addr.clone()).unwrap(),
+        i128::MAX
+    );
+
+    let _ = &test
+        .host
+        .call(
+            transfer_contract_id_obj,
+            Symbol::try_from_val(&test.host, &"transfer_amount").unwrap(),
+            test_vec![
+                &test.host,
+                contract.address,
+                contract.address,
+                i128::MAX - ((i64::MAX as i128) * 2)
+            ]
+            .into(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        contract.balance(transfer_contract_addr.clone()).unwrap(),
+        (i64::MAX as i128) * 2
+    );
+    assert_eq!(
+        contract.balance(contract.address.clone()).unwrap(),
+        i128::MAX
+    );
+}
+
+#[test]
 fn test_clawback_on_contract() {
     let test = StellarAssetContractTest::setup(function_name!());
     let admin = TestSigner::account(&test.issuer_key);
@@ -1330,7 +1748,7 @@ fn test_auth_required() {
     let user_1_addr = contract_id_to_address(&test.host, user_1);
     let user_2_addr = contract_id_to_address(&test.host, user_2);
 
-    let user_1_invoker = TestSigner::ContractInvoker(Hash(user_1));
+    let user_1_invoker = TestSigner::ContractInvoker(ContractId(Hash(user_1)));
     let user_1_bytes = BytesN::<32>::try_from_val(
         &test.host,
         &test.host.bytes_new_from_slice(&user_1).unwrap(),
@@ -1766,7 +2184,7 @@ fn test_account_invoker_auth_with_issuer_admin() {
 
     // Contract invoker can't perform unauthorized admin operation.
     let contract_id = generate_bytes_array(&test.host);
-    let contract_invoker = TestSigner::ContractInvoker(Hash(contract_id));
+    let contract_invoker = TestSigner::ContractInvoker(ContractId(Hash(contract_id)));
     let contract_id_bytes = BytesN::<32>::try_from_val(
         &test.host,
         &test.host.bytes_new_from_slice(&contract_id).unwrap(),
@@ -1789,8 +2207,8 @@ fn test_contract_invoker_auth() {
 
     let admin_contract_id = generate_bytes_array(&test.host);
     let user_contract_id = generate_bytes_array(&test.host);
-    let admin_contract_invoker = TestSigner::ContractInvoker(Hash(admin_contract_id));
-    let user_contract_invoker = TestSigner::ContractInvoker(Hash(user_contract_id));
+    let admin_contract_invoker = TestSigner::ContractInvoker(ContractId(Hash(admin_contract_id)));
+    let user_contract_invoker = TestSigner::ContractInvoker(ContractId(Hash(user_contract_id)));
     let admin_contract_address = contract_id_to_address(&test.host, admin_contract_id);
     let user_contract_address = contract_id_to_address(&test.host, user_contract_id);
     let admin_contract_id_bytes = BytesN::<32>::try_from_val(
@@ -3043,7 +3461,7 @@ fn test_custom_account_auth() {
             let key = test.host.contract_instance_ledger_key(&contract_id)?;
             // Note, that this represents 'correct footprint, missing value' scenario.
             // Incorrect footprint scenario is not covered (it's not auth specific).
-            storage.del_with_host(&key, &test.host, None)
+            storage.del(&key, &test.host, None)
         })
         .unwrap();
 

@@ -176,7 +176,7 @@ use super::xdr::Hash;
 use crate::{
     builtin_contracts::{account_contract::AccountEd25519Signature, base_types::BytesN},
     host::error::TryBorrowOrErr,
-    xdr::PublicKey,
+    xdr::{ContractExecutable, PublicKey},
 };
 #[cfg(any(test, feature = "recording_mode"))]
 use rand::Rng;
@@ -1222,14 +1222,20 @@ impl AuthorizationManager {
         }
 
         let mut invoker_trackers = self.try_borrow_invoker_contract_trackers_mut(host)?;
-        if invoker_trackers.len() != snapshot.invoker_contract_tracker_root_snapshots.len() {
+
+        if invoker_trackers.len() < snapshot.invoker_contract_tracker_root_snapshots.len() {
             return Err(host.err(
                 ScErrorType::Auth,
                 ScErrorCode::InternalError,
-                "unexpected bad auth snapshot",
+                "the number of invoker contract trackers is smaller than in the snapshot",
                 &[],
             ));
         }
+        // If there are more trackers than in the snapshot, then the trackers have been
+        // created in the current (failed) frame, so we should remove them as a part
+        // of rollback.
+        invoker_trackers.truncate(snapshot.invoker_contract_tracker_root_snapshots.len());
+
         for (tracker, snapshot) in invoker_trackers
             .iter_mut()
             .zip(snapshot.invoker_contract_tracker_root_snapshots.iter())
@@ -2019,19 +2025,22 @@ impl AccountAuthorizationTracker {
         let payload = self.get_signature_payload(host)?;
         match sc_addr {
             ScAddress::Account(acc) => {
-                check_account_authentication(host, acc, &payload, self.signature)?;
+                check_account_authentication(host, acc, &payload, self.signature)
             }
-            ScAddress::Contract(acc_contract) => {
-                check_account_contract_auth(
-                    host,
-                    &acc_contract,
-                    &payload,
-                    self.signature,
-                    &self.invocation_tracker.root_authorized_invocation,
-                )?;
-            }
+            ScAddress::Contract(acc_contract) => check_account_contract_auth(
+                host,
+                &acc_contract,
+                &payload,
+                self.signature,
+                &self.invocation_tracker.root_authorized_invocation,
+            ),
+            _ => Err(host.err(
+                ScErrorType::Object,
+                ScErrorCode::InternalError,
+                "unexpected address type in auth",
+                &[self.address.into()],
+            )),
         }
-        Ok(())
     }
 
     // Emulates authentication for the recording mode.
@@ -2072,9 +2081,50 @@ impl AccountAuthorizationTracker {
                 // - Return budget error in case if it was suppressed above.
                 let _ = acc.metered_clone(host.as_budget())?;
             }
-            // Skip custom accounts for now - emulating authentication for
-            // them requires a dummy signature.
-            ScAddress::Contract(_) => {}
+            ScAddress::Contract(contract_id) => {
+                let instance_key = host.contract_instance_ledger_key(&contract_id)?;
+                let entry = host
+                    .try_borrow_storage_mut()?
+                    .try_get(&instance_key, host, None)?;
+                // In test scenarios we often may not have any actual instance, which is fine most
+                // of the time, so we don't return any errors.
+                // In simulation scenarios the instance will likely be there, and when it's
+                // not, we still make our best effort and include at least the necessary instance key
+                // into the footprint.
+                let instance = if let Some(entry) = entry {
+                    match &entry.data {
+                        LedgerEntryData::ContractData(e) => match &e.val {
+                            ScVal::ContractInstance(instance) => instance.metered_clone(host)?,
+                            _ => {
+                                return Ok(());
+                            }
+                        },
+                        _ => {
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    return Ok(());
+                };
+
+                match &instance.executable {
+                    ContractExecutable::Wasm(wasm_hash) => {
+                        let wasm_key = host.contract_code_ledger_key(wasm_hash)?;
+                        let _ = host
+                            .try_borrow_storage_mut()?
+                            .try_get(&wasm_key, host, None)?;
+                    }
+                    ContractExecutable::StellarAsset => (),
+                }
+            }
+            _ => {
+                return Err(host.err(
+                    ScErrorType::Object,
+                    ScErrorCode::InternalError,
+                    "encountered unexpected ScAddress type",
+                    &[],
+                ));
+            }
         }
         Ok(())
     }
@@ -2182,22 +2232,19 @@ impl Host {
         let live_until_ledger = live_until_ledger
             .max(self.get_min_live_until_ledger(xdr::ContractDataDurability::Temporary)?);
         self.with_mut_storage(|storage| {
-            if storage
-                .has_with_host(&nonce_key, self, None)
-                .map_err(|err| {
-                    if err.error.is_type(ScErrorType::Storage)
-                        && err.error.is_code(ScErrorCode::ExceededLimit)
-                    {
-                        return self.err(
-                            ScErrorType::Storage,
-                            ScErrorCode::ExceededLimit,
-                            "trying to access nonce outside of footprint for address",
-                            &[address.to_val()],
-                        );
-                    }
-                    err
-                })?
-            {
+            if storage.has(&nonce_key, self, None).map_err(|err| {
+                if err.error.is_type(ScErrorType::Storage)
+                    && err.error.is_code(ScErrorCode::ExceededLimit)
+                {
+                    return self.err(
+                        ScErrorType::Storage,
+                        ScErrorCode::ExceededLimit,
+                        "trying to access nonce outside of footprint for address",
+                        &[address.to_val()],
+                    );
+                }
+                err
+            })? {
                 return Err(self.err(
                     ScErrorType::Auth,
                     ScErrorCode::ExistingValue,
@@ -2217,7 +2264,7 @@ impl Host {
                 data,
                 ext: LedgerEntryExt::V0,
             };
-            storage.put_with_host(
+            storage.put(
                 &nonce_key,
                 &Rc::metered_new(entry, self)?,
                 Some(live_until_ledger),
@@ -2272,6 +2319,8 @@ impl Host {
         contract: AddressObject,
         args: VecObject,
     ) -> Result<Val, HostError> {
+        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+
         use crate::builtin_contracts::account_contract::ACCOUNT_CONTRACT_CHECK_AUTH_FN_NAME;
         let contract_id = self.contract_id_from_address(contract)?;
         let args_vec = self.call_args_from_obj(args)?;
@@ -2282,6 +2331,7 @@ impl Host {
             CallParams::default_internal_call(),
         );
         if let Err(e) = &res {
+            use crate::ErrorHandler;
             self.error(
                 e.error,
                 "check auth invocation for a custom account contract failed",
@@ -2298,6 +2348,28 @@ impl Host {
     /// preserving the auth state while doing the generic test setup).
     pub fn snapshot_auth_manager(&self) -> Result<AuthorizationManager, HostError> {
         Ok(self.try_borrow_authorization_manager()?.clone())
+    }
+
+    /// Switches host to the recording authorization mode and inherits the
+    /// recording mode settings from the provided authorization manager settings
+    /// in case if it used the recording mode.
+    ///
+    /// This is similar to `switch_to_recording_auth`, but should be preferred
+    /// to use in conjunction with `snapshot_auth_manager`, such that the
+    /// recording mode settings are not overridden.
+    pub fn switch_to_recording_auth_inherited_from_snapshot(
+        &self,
+        auth_manager_snapshot: &AuthorizationManager,
+    ) -> Result<(), HostError> {
+        let disable_non_root_auth = match &auth_manager_snapshot.mode {
+            AuthorizationMode::Enforcing => true,
+            AuthorizationMode::Recording(recording_auth_info) => {
+                recording_auth_info.disable_non_root_auth
+            }
+        };
+        *self.try_borrow_authorization_manager_mut()? =
+            AuthorizationManager::new_recording(disable_non_root_auth);
+        Ok(())
     }
 
     /// Replaces authorization manager with the provided new instance.

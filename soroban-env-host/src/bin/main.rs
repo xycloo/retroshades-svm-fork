@@ -14,6 +14,7 @@ fn main() {
     let enable_diagnostics = true;
     let encoded_host_fn = &[0u8];
     let encoded_resources = &[0u8];
+    let restored_rw_entry_ids = &[0u32];
     let encoded_source_account = &[0u8];
     let encoded_auth_entries = [[0u8]].iter();
     let ledger_info = LedgerInfo::default();
@@ -26,6 +27,7 @@ fn main() {
         enable_diagnostics,
         encoded_host_fn,
         encoded_resources,
+        restored_rw_entry_ids,
         encoded_source_account,
         encoded_auth_entries,
         ledger_info,
@@ -33,5 +35,7 @@ fn main() {
         encoded_ttl_entries,
         base_prng_seed,
         &mut diagnostic_events,
+        None,
+        None,
     );
 }

@@ -4,8 +4,9 @@ use soroban_env_common::call_macro_with_all_host_functions;
 
 use super::{
     AddressObject, Bool, BytesObject, DurationObject, Error, I128Object, I256Object, I256Val,
-    I64Object, MapObject, StorageType, StringObject, SymbolObject, TimepointObject, U128Object,
-    U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject, Void,
+    I64Object, MapObject, MuxedAddressObject, StorageType, StringObject, SymbolObject,
+    TimepointObject, U128Object, U256Object, U256Val, U32Val, U64Object, U64Val, Val, VecObject,
+    Void,
 };
 use super::{Env, EnvBase, Symbol};
 use static_assertions as sa;
@@ -36,10 +37,6 @@ impl EnvBase for Guest {
     #[cfg(feature = "testutils")]
     fn escalate_error_to_panic(&self, _e: Self::Error) -> ! {
         core::arch::wasm32::unreachable()
-    }
-
-    fn check_same_env(&self, _other: &Self) -> Result<(), Self::Error> {
-        Ok(())
     }
 
     fn bytes_copy_from_slice(
@@ -194,7 +191,7 @@ impl EnvBase for Guest {
 ///////////////////////////////////////////////////////////////////////////////
 /// X-macro use: impl Env for Guest
 ///////////////////////////////////////////////////////////////////////////////
-
+//
 // This is a helper macro used only by impl_env_for_guest below. It consumes a
 // token-tree of the form:
 //
@@ -273,7 +270,7 @@ call_macro_with_all_host_functions! { impl_env_for_guest }
 ///////////////////////////////////////////////////////////////////////////////
 /// X-macro use: extern mod blocks
 ///////////////////////////////////////////////////////////////////////////////
-
+//
 // This is a helper macro used only by impl_env_for_guest below. It consumes a
 // token-tree of the form:
 //
@@ -341,7 +338,7 @@ macro_rules! generate_extern_modules {
                 #[allow(unused_imports)]
                 use crate::{I128Object, I256Object, I256Val, I64Object, I64Val, U128Object, U256Object, U256Val, U32Val, U64Object, U64Val, StorageType, TimepointObject, DurationObject};
                 #[allow(unused_imports)]
-                use crate::{Void,AddressObject,SymbolObject,StringObject,Bool};
+                use crate::{Void,AddressObject,MuxedAddressObject,SymbolObject,StringObject,Bool};
                 #[link(wasm_import_module = $mod_str)]
                 extern "C" {
                     $(

@@ -5,7 +5,7 @@ use crate::{
     ConversionError, EnvBase, Error, Host, TryFromVal, U32Val, Val,
 };
 
-#[cfg(any(test, feature = "testutils"))]
+#[cfg(any(test, feature = "backtrace"))]
 use backtrace::{Backtrace, BacktraceFrame};
 use core::fmt::Debug;
 use std::{
@@ -18,7 +18,7 @@ use super::metered_clone::MeteredClone;
 #[derive(Clone)]
 pub(crate) struct DebugInfo {
     events: Events,
-    #[cfg(any(test, feature = "testutils"))]
+    #[cfg(any(test, feature = "backtrace"))]
     backtrace: Backtrace,
 }
 
@@ -36,19 +36,10 @@ impl Into<Error> for HostError {
     }
 }
 
-impl From<HostError> for wasmi::Error {
-    fn from(e: HostError) -> Self {
-        wasmi::Error::host(e)
-    }
-}
-
 impl DebugInfo {
     fn write_events(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO: maybe make this something users can adjust?
-        // https://github.com/stellar/rs-soroban-env/issues/1288
-        const MAX_EVENTS: usize = 25;
         let mut wrote_heading = false;
-        for (i, e) in self.events.0.iter().rev().take(MAX_EVENTS).enumerate() {
+        for (i, e) in self.events.0.iter().rev().enumerate() {
             if !wrote_heading {
                 writeln!(f)?;
                 writeln!(f, "Event log (newest first):")?;
@@ -56,23 +47,15 @@ impl DebugInfo {
             }
             writeln!(f, "   {}: {}", i, e)?;
         }
-        if self.events.0.len() > MAX_EVENTS {
-            writeln!(
-                f,
-                "   {}: ... {} events elided ...",
-                MAX_EVENTS,
-                self.events.0.len() - MAX_EVENTS
-            )?;
-        }
         Ok(())
     }
 
-    #[cfg(not(any(test, feature = "testutils")))]
+    #[cfg(not(any(test, feature = "backtrace")))]
     fn write_backtrace(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "testutils"))]
+    #[cfg(any(test, feature = "backtrace"))]
     fn write_backtrace(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // We do a little trimming here, skipping the first two frames (which
         // are always into, from, and one or more Host::err_foo calls) and all
@@ -244,17 +227,51 @@ impl<T> TryBorrowOrErr<T> for RefCell<T> {
     }
 }
 
-impl Host {
-    /// Convenience function to construct an [Error] and pass to [Host::error].
-    pub(crate) fn err(
-        &self,
-        type_: ScErrorType,
-        code: ScErrorCode,
-        msg: &str,
-        args: &[Val],
-    ) -> HostError {
-        let error = Error::from_type_and_code(type_, code);
-        self.error(error, msg, args)
+/// This is a trait for mapping Results carrying various error types into `HostError`,
+/// while potentially recording the existence of the error to diagnostic logs.
+pub trait ErrorHandler {
+    fn map_err<T, E>(&self, res: Result<T, E>) -> Result<T, HostError>
+    where
+        Error: From<E>,
+        E: Debug;
+    fn error(&self, error: Error, msg: &str, args: &[Val]) -> HostError;
+}
+
+impl ErrorHandler for Host {
+    /// Given a result carrying some error type that can be converted to an
+    /// [Error] and supports [core::fmt::Debug], calls [Host::error] with the
+    /// error when there's an error, also passing the result of
+    /// [core::fmt::Debug::fmt] when [Host::is_debug] is `true`. Returns a
+    /// [Result] over [HostError].
+    ///
+    /// If you have an error type `T` you want to record as a detailed debug
+    /// event and a less-detailed [Error] code embedded in a [HostError], add an
+    /// `impl From<T> for Error` over in `soroban_env_common::error`, or in the
+    /// module defining `T`, and call this where the error is generated.
+    ///
+    /// Note: we do _not_ want to `impl From<T> for HostError` for such types,
+    /// as doing so will avoid routing them through the host in order to record
+    /// their extended diagnostic information into the event log. This means you
+    /// will wind up writing `host.map_err(...)?` a bunch in code that you used
+    /// to be able to get away with just writing `...?`, there's no way around
+    /// this if we want to record the diagnostic information.
+    fn map_err<T, E>(&self, res: Result<T, E>) -> Result<T, HostError>
+    where
+        Error: From<E>,
+        E: Debug,
+    {
+        res.map_err(|e| {
+            use std::borrow::Cow;
+            let mut msg: Cow<'_, str> = Cow::Borrowed(&"");
+            // This observes the debug state, but it only causes a different
+            // (richer) string to be logged as a diagnostic event, which
+            // is itself not observable outside the debug state.
+            self.with_debug_mode(|| {
+                msg = Cow::Owned(format!("{:?}", e));
+                Ok(())
+            });
+            self.error(e.into(), &msg, &[])
+        })
     }
 
     /// At minimum constructs and returns a [HostError] built from the provided
@@ -262,7 +279,7 @@ impl Host {
     /// records a diagnostic event with the provided `msg` and `args` and then
     /// enriches the returned [Error] with [DebugInfo] in the form of a
     /// [Backtrace] and snapshot of the [Events] buffer.
-    pub(crate) fn error(&self, error: Error, msg: &str, args: &[Val]) -> HostError {
+    fn error(&self, error: Error, msg: &str, args: &[Val]) -> HostError {
         let mut he = HostError::from(error);
         self.with_debug_mode(|| {
             // We _try_ to take a mutable borrow of the events buffer refcell
@@ -283,6 +300,20 @@ impl Host {
         });
         he
     }
+}
+
+impl Host {
+    /// Convenience function to construct an [Error] and pass to [Host::error].
+    pub(crate) fn err(
+        &self,
+        type_: ScErrorType,
+        code: ScErrorCode,
+        msg: &str,
+        args: &[Val],
+    ) -> HostError {
+        let error = Error::from_type_and_code(type_, code);
+        self.error(error, msg, args)
+    }
 
     pub(crate) fn maybe_get_debug_info(&self) -> Option<Box<DebugInfo>> {
         #[allow(unused_mut)]
@@ -296,8 +327,11 @@ impl Host {
             self.with_debug_mode(|| {
                 if let Ok(events_ref) = self.0.events.try_borrow() {
                     let events = events_ref.externalize(self)?;
-                    let backtrace = Backtrace::new_unresolved();
-                    res = Some(Box::new(DebugInfo { backtrace, events }));
+                    res = Some(Box::new(DebugInfo {
+                        #[cfg(any(test, feature = "backtrace"))]
+                        backtrace: Backtrace::new_unresolved(),
+                        events,
+                    }));
                 }
                 Ok(())
             });
@@ -333,42 +367,6 @@ impl Host {
             None => self.err(type_, code, msg, &[]),
             Some(index) => self.err(type_, code, msg, &[U32Val::from(index).to_val()]),
         }
-    }
-
-    /// Given a result carrying some error type that can be converted to an
-    /// [Error] and supports [core::fmt::Debug], calls [Host::error] with the
-    /// error when there's an error, also passing the result of
-    /// [core::fmt::Debug::fmt] when [Host::is_debug] is `true`. Returns a
-    /// [Result] over [HostError].
-    ///
-    /// If you have an error type `T` you want to record as a detailed debug
-    /// event and a less-detailed [Error] code embedded in a [HostError], add an
-    /// `impl From<T> for Error` over in `soroban_env_common::error`, or in the
-    /// module defining `T`, and call this where the error is generated.
-    ///
-    /// Note: we do _not_ want to `impl From<T> for HostError` for such types,
-    /// as doing so will avoid routing them through the host in order to record
-    /// their extended diagnostic information into the event log. This means you
-    /// will wind up writing `host.map_err(...)?` a bunch in code that you used
-    /// to be able to get away with just writing `...?`, there's no way around
-    /// this if we want to record the diagnostic information.
-    pub(crate) fn map_err<T, E>(&self, res: Result<T, E>) -> Result<T, HostError>
-    where
-        Error: From<E>,
-        E: Debug,
-    {
-        res.map_err(|e| {
-            use std::borrow::Cow;
-            let mut msg: Cow<'_, str> = Cow::Borrowed(&"");
-            // This observes the debug state, but it only causes a different
-            // (richer) string to be logged as a diagnostic event, which
-            // is itself not observable outside the debug state.
-            self.with_debug_mode(|| {
-                msg = Cow::Owned(format!("{:?}", e));
-                Ok(())
-            });
-            self.error(e.into(), &msg, &[])
-        })
     }
 
     // Extracts the account id from the given ledger key as address object `Val`.
@@ -474,7 +472,7 @@ macro_rules! err {
                 )*
                 Ok(())
             });
-            $host.error($error.into(), $msg, &buf[0..i])
+            <_ as $crate::ErrorHandler>::error($host, $error.into(), $msg, &buf[0..i])
         }
     };
 }

@@ -15,10 +15,10 @@ use crate::{
     storage::Storage,
     xdr::{
         AccountEntry, AccountEntryExt, AccountEntryExtensionV1Ext, AccountFlags, AccountId, Asset,
-        LedgerEntry, LedgerEntryData, LedgerKey, ScAddress, TrustLineAsset, TrustLineEntry,
-        TrustLineEntryExt, TrustLineFlags,
+        LedgerEntry, LedgerEntryData, LedgerKey, ScAddress, ScErrorCode, ScErrorType,
+        TrustLineAsset, TrustLineEntry, TrustLineEntryExt, TrustLineFlags,
     },
-    Env, Host, HostError, StorageType, TryIntoVal,
+    Env, ErrorHandler, Host, HostError, StorageType, TryIntoVal,
 };
 
 use super::storage_types::{BalanceValue, BALANCE_EXTEND_AMOUNT, BALANCE_TTL_THRESHOLD};
@@ -32,7 +32,7 @@ use super::storage_types::{BalanceValue, BALANCE_EXTEND_AMOUNT, BALANCE_TTL_THRE
 /// semantics have been implemented for these balances. If the asset issuer has
 /// the AUTH_REQUIRED flag set, then the non-account identifier must first be authorized
 /// by the issuer/admin before it's allowed to hold a balance.
-
+//
 // Metering: covered by components.
 pub(crate) fn read_balance(e: &Host, addr: Address) -> Result<i128, HostError> {
     match addr.to_sc_address()? {
@@ -54,6 +54,12 @@ pub(crate) fn read_balance(e: &Host, addr: Address) -> Result<i128, HostError> {
                 Ok(0)
             }
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -65,7 +71,7 @@ fn write_contract_balance(
     // We take an unused reference to a "witness" contract-id Hash here, to help
     // ensure this function is only called from a context where `addr` has been
     // matched as an ScAddress::Contract(hash) rather than ScAddress::Account(_)
-    _witness_addr_contract_id: &crate::xdr::Hash,
+    _witness_addr_contract_id: &crate::xdr::ContractId,
 ) -> Result<(), HostError> {
     let key = DataKey::Balance(addr);
     e.put_contract_data(
@@ -130,6 +136,12 @@ pub(crate) fn receive_balance(e: &Host, addr: Address, amount: i128) -> Result<(
             balance.amount = new_balance;
             write_contract_balance(e, addr, balance, &id)
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -188,6 +200,12 @@ pub(crate) fn spend_balance_no_authorization_check(
             }
             Ok(())
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -219,6 +237,12 @@ pub(crate) fn is_authorized(e: &Host, addr: Address) -> Result<bool, HostError> 
                 Ok(!is_asset_auth_required(e)?)
             }
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -257,6 +281,12 @@ pub(crate) fn write_authorization(
                 write_contract_balance(e, addr, balance, &id)
             }
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -326,6 +356,12 @@ pub(crate) fn check_clawbackable(e: &Host, addr: Address) -> Result<(), HostErro
 
             Ok(())
         }
+        _ => Err(e.err(
+            ScErrorType::Object,
+            ScErrorCode::InternalError,
+            "Unexpected ScAddress type",
+            &[addr.as_object().into()],
+        )),
     }
 }
 
@@ -417,7 +453,7 @@ fn transfer_account_balance(
         if new_balance >= min_balance && new_balance <= max_balance {
             ae.balance = new_balance;
             le = Host::modify_ledger_entry_data(host, &le, LedgerEntryData::Account(ae))?;
-            storage.put_with_host(&lk, &le, None, &host, None)
+            storage.put(&lk, &le, None, &host, None)
         } else {
             Err(err!(
                 host,
@@ -499,7 +535,7 @@ fn transfer_trustline_balance(
         if new_balance >= min_balance && new_balance <= max_balance {
             tl.balance = new_balance;
             le = Host::modify_ledger_entry_data(host, &le, LedgerEntryData::Trustline(tl))?;
-            storage.put_with_host(&lk, &le, None, &host, None)
+            storage.put(&lk, &le, None, &host, None)
         } else {
             Err(err!(
                 host,
@@ -769,7 +805,7 @@ fn set_trustline_authorization(
             tl.flags |= TrustLineFlags::AuthorizedToMaintainLiabilitiesFlag as u32;
         }
         le = Host::modify_ledger_entry_data(host, &le, LedgerEntryData::Trustline(tl))?;
-        storage.put_with_host(&lk, &le, None, &host, None)
+        storage.put(&lk, &le, None, &host, None)
     })
 }
 

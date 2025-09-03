@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::host_object::MemHostObjectType;
+use crate::host_object::{MemHostObjectType, MuxedScAddress};
 use crate::{
     budget::{AsBudget, DepthLimiter},
     err,
@@ -18,6 +18,8 @@ use crate::{
     AddressObject, BytesObject, Convert, Host, HostError, Object, ScValObjRef, ScValObject, Symbol,
     SymbolObject, TryFromVal, TryIntoVal, U32Val, Val, VecObject,
 };
+
+use super::ErrorHandler;
 
 impl Host {
     // Notes on metering: free
@@ -158,7 +160,7 @@ impl Host {
         k: Val,
         durability: ContractDataDurability,
     ) -> Result<Rc<LedgerKey>, HostError> {
-        let key_scval = self.from_host_val(k)?;
+        let key_scval = self.from_host_val_for_storage(k)?;
         self.storage_key_from_scval(key_scval, durability)
     }
 
@@ -222,7 +224,7 @@ impl Host {
     ) -> Result<Option<BytesObject>, HostError> {
         if let Some(id) = self.get_current_contract_id_opt_internal()? {
             let obj = self.add_host_object::<ScBytes>(
-                self.metered_slice_to_vec(id.as_slice())?.try_into()?,
+                self.metered_slice_to_vec(id.0.as_slice())?.try_into()?,
             )?;
             Ok(Some(obj))
         } else {
@@ -264,6 +266,21 @@ impl Host {
         let mut mv = Vec::<ScMapEntry>::with_metered_capacity(map.len(), self)?;
         for (k, v) in map.iter(self)? {
             let key = self.from_host_val(*k)?;
+            let val = self.from_host_val(*v)?;
+            mv.push(ScMapEntry { key, val });
+        }
+        Ok(ScMap(self.map_err(mv.try_into())?))
+    }
+
+    // This function is almost identical to `host_map_to_scmap`, and should only
+    // be used for creating the instance storage map.
+    pub(crate) fn instance_storage_map_to_scmap(&self, map: &HostMap) -> Result<ScMap, HostError> {
+        let mut mv = Vec::<ScMapEntry>::with_metered_capacity(map.len(), self)?;
+        for (k, v) in map.iter(self)? {
+            // This is the only difference point compared to `host_map_to_scmap`:
+            // we convert the key according to the storage key conversion rules
+            // instead of the general value conversion rules.
+            let key = self.from_host_val_for_storage(*k)?;
             let val = self.from_host_val(*v)?;
             mv.push(ScMapEntry { key, val });
         }
@@ -324,6 +341,18 @@ impl Host {
         })?;
         // This is a check of internal logical consistency: we came _from_ a Val
         // so the ScVal definitely should have been representable.
+        self.check_val_representable_scval(&scval)?;
+        Ok(scval)
+    }
+
+    pub(crate) fn from_host_val_for_storage(&self, val: Val) -> Result<ScVal, HostError> {
+        let _span = tracy_span!("Val to ScVal");
+        *self.try_borrow_storage_key_conversion_active_mut()? = true;
+        let scval = self.budget_cloned().with_limited_depth(|_| {
+            ScVal::try_from_val(self, &val)
+                .map_err(|cerr| self.error(cerr, "failed to convert host value to ScVal", &[val]))
+        })?;
+        *self.try_borrow_storage_key_conversion_active_mut()? = false;
         self.check_val_representable_scval(&scval)?;
         Ok(scval)
     }
@@ -419,6 +448,17 @@ impl Host {
                     HostObject::String(s) => ScVal::String(s.metered_clone(self)?),
                     HostObject::Symbol(s) => ScVal::Symbol(s.metered_clone(self)?),
                     HostObject::Address(addr) => ScVal::Address(addr.metered_clone(self)?),
+                    HostObject::MuxedAddress(addr) => {
+                        if *self.try_borrow_storage_key_conversion_active()? {
+                            return Err(self.err(
+                                ScErrorType::Storage,
+                                ScErrorCode::InvalidInput,
+                                "muxed addresses should not be used in the storage keys",
+                                &[objref.to_val()],
+                            ));
+                        }
+                        ScVal::Address(addr.0.metered_clone(self)?)
+                    }
                 };
                 Ok(ScValObject::unchecked_from_val(val))
             })
@@ -504,7 +544,23 @@ impl Host {
                 )?)?
                 .into()),
 
-            ScVal::Address(addr) => Ok(self.add_host_object(addr.metered_clone(self)?)?.into()),
+            ScVal::Address(addr) => {
+                match addr {
+                    ScAddress::Account(_) | ScAddress::Contract(_) => {
+                        Ok(self.add_host_object(addr.metered_clone(self)?)?.into())
+                    }
+                    ScAddress::MuxedAccount(_) => Ok(self
+                        .add_host_object(MuxedScAddress(addr.metered_clone(self)?))?
+                        .into()),
+                    _ => Err(self.err(
+                        ScErrorType::Object,
+                        ScErrorCode::UnexpectedType,
+                        "encountered unsupported ScAddress type",
+                        &[],
+                    )),
+                }
+                // ,
+            }
 
             // None of the following cases should have made it into this function, they
             // are excluded by the ScValObjRef::classify function.
