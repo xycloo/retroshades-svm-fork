@@ -3,7 +3,7 @@ use crate::{
     budget::AsBudget,
     err,
     host::{
-        metered_clone::{MeteredClone, MeteredContainer, MeteredIterator},
+        metered_clone::{MeteredClone, MeteredContainer},
         prng::Prng,
     },
     storage::{InstanceStorageMap, StorageMap},
@@ -524,8 +524,22 @@ impl Host {
         // fallible in a variety of ways, and if it fails we want to roll back
         // everything else.
         if res.is_ok() {
-            if let Err(e) = self.persist_instance_storage() {
-                res = Err(e)
+            let instance_storage_persisted = self.persist_instance_storage();
+            match instance_storage_persisted {
+                Ok(persisted) => {
+                    // If we did persist instance storage, we may need to reload
+                    // it into the re-entrant parent frames.
+                    if persisted {
+                        // Similarly to above, if reloading instance storage, if
+                        // this fails we need to roll back everything.
+                        if let Err(e) = self.maybe_reload_instance_storage_on_frame_pop() {
+                            res = Err(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    res = Err(e);
+                }
             }
         }
         {
@@ -633,11 +647,91 @@ impl Host {
     where
         F: FnOnce() -> Result<Val, HostError>,
     {
-        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::contract_invocation(
+                self, &id, func,
+            ),
+        );
         self.with_frame(
             Frame::TestContract(self.create_test_contract_frame(id, func, vec![])?),
             f,
         )
+    }
+
+    /// Pushes a test contract [`Frame`], runs a closure, and then pops the
+    /// frame, rolling back if the closure returned an error. Returns the result
+    /// that the closure returned (or any error that occurred during the closure
+    /// or the frame push/pop). Used for testing.
+    #[cfg(any(test, feature = "testutils"))]
+    pub fn try_with_test_contract_frame<F>(
+        &self,
+        id: ContractId,
+        func: Symbol,
+        f: F,
+    ) -> Result<Val, HostError>
+    where
+        F: FnOnce() -> Result<Val, HostError>,
+    {
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::contract_invocation(
+                self, &id, func,
+            ),
+        );
+
+        // Code taken from `call_n_internal` to handle panics inside the closure `f`.
+        // Modified to run as a closure within a test contract frame instead of invoking
+        // a contract function.
+        let frame = self.create_test_contract_frame(id.clone(), func, vec![])?;
+        let panic = frame.panic.clone();
+        self.with_frame(Frame::TestContract(frame), || {
+            use std::any::Any;
+            use std::panic::AssertUnwindSafe;
+            type PanicVal = Box<dyn Any + Send>;
+
+            let closure = AssertUnwindSafe(move || f());
+            let res: Result<Result<Val, HostError>, PanicVal> =
+                crate::testutils::call_with_suppressed_panic_hook(closure);
+            match res {
+                Ok(res) => res,
+                Err(panic_payload) => {
+                    let mut error: Error =
+                        Error::from(wasmi::core::TrapCode::UnreachableCodeReached);
+
+                    let mut recovered_error_from_panic_refcell = false;
+                    if let Ok(panic) = panic.try_borrow() {
+                        if let Some(err) = *panic {
+                            recovered_error_from_panic_refcell = true;
+                            error = err;
+                        }
+                    }
+
+                    if !recovered_error_from_panic_refcell {
+                        self.with_debug_mode(|| {
+                            // only include func in log if a non-empty name is provided
+                            let func_str = match format!("{:?}", func).as_str() {
+                                "Symbol()" => String::new(),
+                                formatted => format!(" with fn name '{}'", formatted),
+                            };
+                            if let Some(str) = panic_payload.downcast_ref::<&str>() {
+                                let msg: String = format!(
+                                    "caught panic '{}' from test contract frame{}",
+                                    str, func_str
+                                );
+                                let _ = self.log_diagnostics(&msg, &[]);
+                            } else if let Some(str) = panic_payload.downcast_ref::<String>() {
+                                let msg: String = format!(
+                                    "caught panic '{}' from test contract frame{}",
+                                    str, func_str
+                                );
+                                let _ = self.log_diagnostics(&msg, &[]);
+                            };
+                            Ok(())
+                        })
+                    }
+                    Err(self.error(error, "caught error from test contract frame", &[]))
+                }
+            }
+        })
     }
 
     #[cfg(any(test, feature = "testutils"))]
@@ -771,9 +865,21 @@ impl Host {
                         .try_borrow_storage_mut()?
                         .is_key_live_in_snapshot(self, &wasm_key)?;
                     if is_key_live_in_snapshot {
-                        let (code, costs) = self.retrieve_wasm_from_storage(&wasm_hash)?;
-                        let parsed_module =
-                            ParsedModule::new_with_isolated_engine(self, code.as_slice(), costs)?;
+                        let (code, _costs) = self.retrieve_wasm_from_storage(&wasm_hash)?;
+                        // Currently only v0 costs are used by the inter-ledger
+                        // module cache. Note, that when key is not in the live
+                        // snapshot, the inter-ledger cache won't be used
+                        // either, so we'll end up in the "cache miss" case
+                        // below and then correctly charge the instantiation
+                        // costs in `Vm::new_with_cost_inputs`.
+                        let costs_v0 = crate::vm::VersionedContractCodeCostInputs::V0 {
+                            wasm_bytes: code.len(),
+                        };
+                        let parsed_module = ParsedModule::new_with_isolated_engine(
+                            self,
+                            code.as_slice(),
+                            costs_v0,
+                        )?;
                         let wasmi_linker = parsed_module.make_wasmi_linker(self)?;
                         Ok(Some((parsed_module, wasmi_linker)))
                     } else {
@@ -821,6 +927,12 @@ impl Host {
         args: &[Val],
         call_params: CallParams,
     ) -> Result<Val, HostError> {
+        #[cfg(any(test, feature = "testutils"))]
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::contract_invocation(
+                self, id, func,
+            ),
+        );
         // Internal host calls may call some special functions that otherwise
         // aren't allowed to be called.
         if !call_params.internal_host_call
@@ -849,9 +961,13 @@ impl Host {
                 // Non-reentrant calls, or calls in Allowed mode,
                 // or immediate-reentry calls in SelfAllowed mode
                 // are all acceptable.
-                (_, None)
-                | (ContractReentryMode::Allowed, _)
-                | (ContractReentryMode::SelfAllowed, Some(0)) => (),
+                (_, None) | (ContractReentryMode::Allowed, _) => (),
+                (ContractReentryMode::SelfAllowed, Some(0)) => {
+                    // Persist the instance storage before making a re-entrant
+                    // call in order to allow the re-entered call to see the
+                    // instance storage changes made so far in the current call.
+                    self.persist_instance_storage()?;
+                }
 
                 // But any non-immediate-reentry in SelfAllowed mode,
                 // or any reentry at all in Prohibited mode, are errors.
@@ -1069,7 +1185,9 @@ impl Host {
     // Notes on metering: covered by the called components.
     pub fn invoke_function(&self, hf: HostFunction) -> Result<ScVal, HostError> {
         #[cfg(any(test, feature = "testutils"))]
-        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::from_host_function(&hf),
+        );
 
         let rv = self.invoke_function_and_return_val(hf)?;
         self.from_host_val(rv)
@@ -1081,7 +1199,6 @@ impl Host {
         if ctx.storage.is_some() {
             return Ok(());
         }
-
         let Some(instance) = ctx.frame.instance() else {
             return Err(self.err(
                 ScErrorType::Context,
@@ -1090,29 +1207,55 @@ impl Host {
                 &[],
             ));
         };
+        ctx.storage = Some(InstanceStorageMap::from_instance_xdr(instance, self)?);
+        Ok(())
+    }
 
-        ctx.storage = Some(InstanceStorageMap::from_map(
-            instance.storage.as_ref().map_or_else(
-                || Ok(vec![]),
-                |m| {
-                    m.iter()
-                        .map(|i| {
-                            Ok((
-                                self.to_valid_host_val(&i.key)?,
-                                self.to_valid_host_val(&i.val)?,
-                            ))
-                        })
-                        .metered_collect::<Result<Vec<(Val, Val)>, HostError>>(self)?
-                },
-            )?,
-            self,
-        )?);
+    fn reload_instance_storage(&self, ctx: &mut Context) -> Result<(), HostError> {
+        let Some(contract_id) = ctx.frame.contract_id() else {
+            return Err(self.err(
+                ScErrorType::Context,
+                ScErrorCode::InternalError,
+                "access to instance storage in frame without contract ID",
+                &[],
+            ));
+        };
+        let instance_key = self.contract_instance_ledger_key(&contract_id)?;
+        let instance = self.retrieve_contract_instance_from_storage(&instance_key)?;
+        ctx.storage = Some(InstanceStorageMap::from_instance_xdr(&instance, self)?);
+        Ok(())
+    }
+
+    fn maybe_reload_instance_storage_on_frame_pop(&self) -> Result<(), HostError> {
+        let mut contexts = self.try_borrow_context_stack_mut()?;
+        let contexts_len = contexts.len();
+        let Some(curr_contract_id) = contexts.last().and_then(|ctx| {
+            // The clone is unmetered for simplicity, this operation is rare.
+            ctx.frame.contract_id().cloned()
+        }) else {
+            return Err(self.err(
+                ScErrorType::Context,
+                ScErrorCode::InternalError,
+                "no contract in current frame during instance storage reload",
+                &[],
+            ));
+        };
+
+        // Iterate all the contexts besides the top-most (which
+        // is being popped now).
+        for ctx in contexts.iter_mut().take(contexts_len - 1) {
+            if ctx.frame.contract_id() == Some(&curr_contract_id) {
+                self.reload_instance_storage(ctx)?;
+            }
+        }
         Ok(())
     }
 
     // Make the in-memory instance storage persist into the `Storage` by writing
     // its updated contents into corresponding `ContractData` ledger entry.
-    fn persist_instance_storage(&self) -> Result<(), HostError> {
+    // Returns `true` if instance storage was persisted, `false` otherwise (i.e.
+    // when there are no changes to persist).
+    fn persist_instance_storage(&self) -> Result<bool, HostError> {
         let updated_instance_storage = self.with_current_context_mut(|ctx| {
             if let Some(storage) = &ctx.storage {
                 if !storage.is_modified {
@@ -1128,7 +1271,9 @@ impl Host {
             let key = self.contract_instance_ledger_key(&contract_id)?;
 
             self.store_contract_instance(None, updated_instance_storage, contract_id, &key)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 }

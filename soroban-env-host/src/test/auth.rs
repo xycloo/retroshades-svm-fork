@@ -1,4 +1,5 @@
 use ed25519_dalek::SigningKey;
+use expect_test::expect;
 use rand::Rng;
 use soroban_builtin_sdk_macros::contracttype;
 use soroban_env_common::xdr::{
@@ -8,7 +9,8 @@ use soroban_env_common::xdr::{
     SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials, Uint256, VecM,
 };
 use soroban_test_wasms::{
-    AUTH_TEST_CONTRACT, CONDITIONAL_ACCOUNT_TEST_CONTRACT, DELEGATED_ACCOUNT_TEST_CONTRACT,
+    AUTH_TEST_CONTRACT, CHECK_AUTH_INSTANCE_STORAGE_TEST_CONTRACT,
+    CONDITIONAL_ACCOUNT_TEST_CONTRACT, DELEGATED_ACCOUNT_TEST_CONTRACT,
 };
 
 use crate::auth::RecordedAuthPayload;
@@ -961,6 +963,206 @@ fn test_two_authorized_trees() {
         true,
     );
     test.verify_nonces_consumed(vec![2]);
+    expect![[r#"
+        DetailedInvocationResources {
+            invocation: InvokeContract(
+                Contract(
+                    ContractId(
+                        Hash(921f0ac9c8ea643a8e50e09f27a3014d440134e2ed44eb0adc5b6e0eacaab635),
+                    ),
+                ),
+                ScSymbol(
+                    StringM(tree_fn),
+                ),
+            ),
+            resources: SubInvocationResources {
+                instructions: 3534535,
+                mem_bytes: 8481766,
+                disk_read_entries: 1,
+                memory_read_entries: 8,
+                write_entries: 2,
+                disk_read_bytes: 132,
+                write_bytes: 152,
+                contract_events_size_bytes: 0,
+                persistent_rent_ledger_bytes: 0,
+                persistent_entry_rent_bumps: 0,
+                temporary_rent_ledger_bytes: 136800,
+                temporary_entry_rent_bumps: 2,
+            },
+            sub_call_resources: [
+                DetailedInvocationResources {
+                    invocation: InvokeContract(
+                        Contract(
+                            ContractId(
+                                Hash(2920dd889580ddcd278d3cbd1ada25ec0ab9d9f499386395dca4913ab68be212),
+                            ),
+                        ),
+                        ScSymbol(
+                            StringM(tree_fn),
+                        ),
+                    ),
+                    resources: SubInvocationResources {
+                        instructions: 1573320,
+                        mem_bytes: 3636258,
+                        disk_read_entries: 1,
+                        memory_read_entries: 4,
+                        write_entries: 1,
+                        disk_read_bytes: 132,
+                        write_bytes: 76,
+                        contract_events_size_bytes: 0,
+                        persistent_rent_ledger_bytes: 0,
+                        persistent_entry_rent_bumps: 0,
+                        temporary_rent_ledger_bytes: 68400,
+                        temporary_entry_rent_bumps: 1,
+                    },
+                    sub_call_resources: [
+                        DetailedInvocationResources {
+                            invocation: InvokeContract(
+                                Contract(
+                                    ContractId(
+                                        Hash(ed2d0cc5553be6d8fc574347c9b2e1221a67baa5ce70cd9822588dc638d147a2),
+                                    ),
+                                ),
+                                ScSymbol(
+                                    StringM(tree_fn),
+                                ),
+                            ),
+                            resources: SubInvocationResources {
+                                instructions: 362050,
+                                mem_bytes: 1208266,
+                                disk_read_entries: 0,
+                                memory_read_entries: 1,
+                                write_entries: 0,
+                                disk_read_bytes: 0,
+                                write_bytes: 0,
+                                contract_events_size_bytes: 0,
+                                persistent_rent_ledger_bytes: 0,
+                                persistent_entry_rent_bumps: 0,
+                                temporary_rent_ledger_bytes: 0,
+                                temporary_entry_rent_bumps: 0,
+                            },
+                            sub_call_resources: [],
+                        },
+                        DetailedInvocationResources {
+                            invocation: InvokeContract(
+                                Contract(
+                                    ContractId(
+                                        Hash(37ef0dae9135897cd48eb703851fee6ebcd418d98228c61c23922a1bf9f07969),
+                                    ),
+                                ),
+                                ScSymbol(
+                                    StringM(tree_fn),
+                                ),
+                            ),
+                            resources: SubInvocationResources {
+                                instructions: 361465,
+                                mem_bytes: 1208291,
+                                disk_read_entries: 0,
+                                memory_read_entries: 1,
+                                write_entries: 0,
+                                disk_read_bytes: 0,
+                                write_bytes: 0,
+                                contract_events_size_bytes: 0,
+                                persistent_rent_ledger_bytes: 0,
+                                persistent_entry_rent_bumps: 0,
+                                temporary_rent_ledger_bytes: 0,
+                                temporary_entry_rent_bumps: 0,
+                            },
+                            sub_call_resources: [],
+                        },
+                    ],
+                },
+                DetailedInvocationResources {
+                    invocation: InvokeContract(
+                        Contract(
+                            ContractId(
+                                Hash(37ef0dae9135897cd48eb703851fee6ebcd418d98228c61c23922a1bf9f07969),
+                            ),
+                        ),
+                        ScSymbol(
+                            StringM(tree_fn),
+                        ),
+                    ),
+                    resources: SubInvocationResources {
+                        instructions: 1574840,
+                        mem_bytes: 3636425,
+                        disk_read_entries: 0,
+                        memory_read_entries: 2,
+                        write_entries: 1,
+                        disk_read_bytes: 0,
+                        write_bytes: 76,
+                        contract_events_size_bytes: 0,
+                        persistent_rent_ledger_bytes: 0,
+                        persistent_entry_rent_bumps: 0,
+                        temporary_rent_ledger_bytes: 68400,
+                        temporary_entry_rent_bumps: 1,
+                    },
+                    sub_call_resources: [
+                        DetailedInvocationResources {
+                            invocation: InvokeContract(
+                                Contract(
+                                    ContractId(
+                                        Hash(468a176e1191f53ab41f5f89194cc1ca44b98fb1d216c2e96ffd93de465fa2f9),
+                                    ),
+                                ),
+                                ScSymbol(
+                                    StringM(tree_fn),
+                                ),
+                            ),
+                            resources: SubInvocationResources {
+                                instructions: 363603,
+                                mem_bytes: 1208409,
+                                disk_read_entries: 0,
+                                memory_read_entries: 1,
+                                write_entries: 0,
+                                disk_read_bytes: 0,
+                                write_bytes: 0,
+                                contract_events_size_bytes: 0,
+                                persistent_rent_ledger_bytes: 0,
+                                persistent_entry_rent_bumps: 0,
+                                temporary_rent_ledger_bytes: 0,
+                                temporary_entry_rent_bumps: 0,
+                            },
+                            sub_call_resources: [],
+                        },
+                        DetailedInvocationResources {
+                            invocation: InvokeContract(
+                                Contract(
+                                    ContractId(
+                                        Hash(ed2d0cc5553be6d8fc574347c9b2e1221a67baa5ce70cd9822588dc638d147a2),
+                                    ),
+                                ),
+                                ScSymbol(
+                                    StringM(tree_fn),
+                                ),
+                            ),
+                            resources: SubInvocationResources {
+                                instructions: 361801,
+                                mem_bytes: 1208168,
+                                disk_read_entries: 0,
+                                memory_read_entries: 0,
+                                write_entries: 0,
+                                disk_read_bytes: 0,
+                                write_bytes: 0,
+                                contract_events_size_bytes: 0,
+                                persistent_rent_ledger_bytes: 0,
+                                persistent_entry_rent_bumps: 0,
+                                temporary_rent_ledger_bytes: 0,
+                                temporary_entry_rent_bumps: 0,
+                            },
+                            sub_call_resources: [],
+                        },
+                    ],
+                },
+            ],
+        }"#]]
+    .assert_eq(
+        format!(
+            "{:#?}",
+            test.host.get_detailed_last_invocation_resources().unwrap()
+        )
+        .as_str(),
+    );
 
     // Failing scenarios
     // Top-level authorization instead of 2 trees
@@ -2204,6 +2406,97 @@ fn test_require_auth_within_check_auth() {
         ),
         Some(3000)
     );
+    expect![[r#"
+        DetailedInvocationResources {
+            invocation: InvokeContract(
+                Contract(
+                    ContractId(
+                        Hash(37ef0dae9135897cd48eb703851fee6ebcd418d98228c61c23922a1bf9f07969),
+                    ),
+                ),
+                ScSymbol(
+                    StringM(do_auth),
+                ),
+            ),
+            resources: SubInvocationResources {
+                instructions: 1433206,
+                mem_bytes: 3621468,
+                disk_read_entries: 1,
+                memory_read_entries: 10,
+                write_entries: 3,
+                disk_read_bytes: 132,
+                write_bytes: 220,
+                contract_events_size_bytes: 0,
+                persistent_rent_ledger_bytes: 0,
+                persistent_entry_rent_bumps: 0,
+                temporary_rent_ledger_bytes: 422000,
+                temporary_entry_rent_bumps: 3,
+            },
+            sub_call_resources: [
+                DetailedInvocationResources {
+                    invocation: InvokeContract(
+                        Contract(
+                            ContractId(
+                                Hash(921f0ac9c8ea643a8e50e09f27a3014d440134e2ed44eb0adc5b6e0eacaab635),
+                            ),
+                        ),
+                        ScSymbol(
+                            StringM(__check_auth),
+                        ),
+                    ),
+                    resources: SubInvocationResources {
+                        instructions: 1049588,
+                        mem_bytes: 2405669,
+                        disk_read_entries: 1,
+                        memory_read_entries: 7,
+                        write_entries: 2,
+                        disk_read_bytes: 132,
+                        write_bytes: 148,
+                        contract_events_size_bytes: 0,
+                        persistent_rent_ledger_bytes: 0,
+                        persistent_entry_rent_bumps: 0,
+                        temporary_rent_ledger_bytes: 357200,
+                        temporary_entry_rent_bumps: 2,
+                    },
+                    sub_call_resources: [
+                        DetailedInvocationResources {
+                            invocation: InvokeContract(
+                                Contract(
+                                    ContractId(
+                                        Hash(2920dd889580ddcd278d3cbd1ada25ec0ab9d9f499386395dca4913ab68be212),
+                                    ),
+                                ),
+                                ScSymbol(
+                                    StringM(__check_auth),
+                                ),
+                            ),
+                            resources: SubInvocationResources {
+                                instructions: 733141,
+                                mem_bytes: 1202616,
+                                disk_read_entries: 1,
+                                memory_read_entries: 3,
+                                write_entries: 1,
+                                disk_read_bytes: 132,
+                                write_bytes: 76,
+                                contract_events_size_bytes: 0,
+                                persistent_rent_ledger_bytes: 0,
+                                persistent_entry_rent_bumps: 0,
+                                temporary_rent_ledger_bytes: 220400,
+                                temporary_entry_rent_bumps: 1,
+                            },
+                            sub_call_resources: [],
+                        },
+                    ],
+                },
+            ],
+        }"#]]
+    .assert_eq(
+        format!(
+            "{:#?}",
+            test.host.get_detailed_last_invocation_resources().unwrap()
+        )
+        .as_str(),
+    );
 }
 
 #[test]
@@ -3206,4 +3499,145 @@ fn test_rollback_with_conditional_custom_account_auth() {
     assert_eq!(test.read_nonce_live_until(&account, 555), Some(1000));
     // Third call still can't succeed and won't consume nonce.
     assert_eq!(test.read_nonce_live_until(&account, 666), None);
+}
+
+#[test]
+fn test_instance_storage_in_check_auth_with_reentrance() {
+    let test = AuthTest::setup(0, 0);
+    let account_obj = test
+        .host
+        .register_test_contract_wasm(CHECK_AUTH_INSTANCE_STORAGE_TEST_CONTRACT);
+    let account = Address::try_from_val(&test.host, &account_obj).unwrap();
+    let auth_entry_prototype = SorobanAuthorizationEntry {
+        credentials: SorobanCredentials::Address(SorobanAddressCredentials {
+            address: account.to_sc_address().unwrap(),
+            nonce: 0,
+            signature: ScVal::Void,
+            signature_expiration_ledger: 1000,
+        }),
+        root_invocation: SorobanAuthorizedInvocation {
+            function: Default::default(),
+            sub_invocations: Default::default(),
+        },
+    };
+    let mut nonce = 1234;
+    let mut create_auth_entry = |fn_name: &str, auth_val: u32| {
+        let mut entry = auth_entry_prototype.clone();
+        if let SorobanCredentials::Address(creds) = &mut entry.credentials {
+            entry.root_invocation.function =
+                SorobanAuthorizedFunction::ContractFn(InvokeContractArgs {
+                    contract_address: account.to_sc_address().unwrap(),
+                    function_name: fn_name.try_into().unwrap(),
+                    args: vec![ScVal::U32(auth_val)].try_into().unwrap(),
+                });
+            creds.nonce = nonce;
+            nonce += 1;
+        } else {
+            unreachable!();
+        };
+        entry
+    };
+
+    let get_val = || -> u32 {
+        test.host
+            .call(
+                account_obj,
+                Symbol::try_from_val(&test.host, &"get_key").unwrap(),
+                test_vec![&test.host].into(),
+            )
+            .unwrap()
+            .try_into_val(&test.host)
+            .unwrap()
+    };
+
+    let mut do_call = |fn_name: &str, auth_calls: u32, expect_success: bool| {
+        let curr_val = get_val();
+        let mut auth_entries = vec![];
+        for i in 0..auth_calls {
+            auth_entries.push(create_auth_entry(fn_name, i));
+        }
+        test.host.set_authorization_entries(auth_entries).unwrap();
+        let res = test.host.call(
+            account_obj,
+            Symbol::try_from_val(&test.host, &fn_name).unwrap(),
+            test_vec![&test.host, auth_calls].into(),
+        );
+        if !expect_success {
+            assert!(res.is_err());
+            assert_eq!(get_val(), curr_val);
+        } else {
+            res.unwrap();
+        }
+    };
+
+    let mut last_key_val = 0_u32;
+    let mut get_key_increase = || -> u32 {
+        let new_val = get_val();
+        let res = new_val - last_key_val;
+        last_key_val = new_val;
+        res
+    };
+
+    let fail_after = |bump_count: u32| {
+        let fail_at = get_val() + bump_count;
+        test.host
+            .call(
+                account_obj,
+                Symbol::try_from_val(&test.host, &"fail_at").unwrap(),
+                test_vec![&test.host, fail_at].into(),
+            )
+            .unwrap();
+    };
+
+    // `pre_auth`/`post_auth` calls increase the value for key by 2 for every
+    // auth call (once in the respective function and once in `__check_auth`),
+    // `pre_post` by 3 (twice in the function pre/post auth, and once in
+    // `__check_auth`).
+    do_call("pre_auth", 1, true);
+    assert_eq!(get_key_increase(), 2);
+    do_call("post_auth", 1, true);
+    assert_eq!(get_key_increase(), 2);
+    do_call("pre_post", 1, true);
+    assert_eq!(get_key_increase(), 3);
+
+    do_call("pre_auth", 2, true);
+    assert_eq!(get_key_increase(), 4);
+    do_call("post_auth", 3, true);
+    assert_eq!(get_key_increase(), 6);
+    do_call("pre_post", 4, true);
+    assert_eq!(get_key_increase(), 12);
+
+    // Now test rollbacks - fail at different points in the process.
+    fail_after(0);
+    do_call("pre_auth", 1, false);
+    fail_after(1);
+    do_call("pre_auth", 1, false);
+    fail_after(4);
+    do_call("pre_auth", 5, false);
+
+    fail_after(0);
+    do_call("post_auth", 1, false);
+    fail_after(1);
+    do_call("post_auth", 1, false);
+    fail_after(6);
+    do_call("post_auth", 6, false);
+
+    fail_after(0);
+    do_call("pre_post", 1, false);
+    fail_after(1);
+    do_call("pre_post", 1, false);
+    fail_after(2);
+    do_call("pre_post", 1, false);
+    fail_after(8);
+    do_call("pre_post", 4, false);
+
+    // Make sure that after failed attempts we can still do successful calls.
+    // Set fail trigger to the value that won't be reached.
+    fail_after(1000);
+    do_call("pre_auth", 1, true);
+    assert_eq!(get_key_increase(), 2);
+    do_call("post_auth", 1, true);
+    assert_eq!(get_key_increase(), 2);
+    do_call("pre_post", 1, true);
+    assert_eq!(get_key_increase(), 3);
 }

@@ -986,6 +986,25 @@ impl AuthorizationManager {
     }
 
     #[cfg(any(test, feature = "recording_mode"))]
+    fn is_invoker_contract(&self, host: &Host, address: AddressObject) -> Result<bool, HostError> {
+        let call_stack = self.try_borrow_call_stack(host)?;
+        for i in 0..(call_stack.len() - 1) {
+            match call_stack[i] {
+                AuthStackFrame::CreateContractHostFn(_) => (),
+                AuthStackFrame::Contract(ref contract_frame) => {
+                    if host
+                        .compare(&contract_frame.contract_address, &address)?
+                        .is_eq()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(any(test, feature = "recording_mode"))]
     fn require_auth_recording(
         &self,
         host: &Host,
@@ -1068,6 +1087,16 @@ impl AuthorizationManager {
         // Alert the user in `disable_non_root_auth` mode if we're not
         // in the root stack frame.
         if recording_info.disable_non_root_auth && self.try_borrow_call_stack(host)?.len() != 1 {
+            if self.is_invoker_contract(host, address)? {
+                return Err(host.err(
+                    ScErrorType::Auth,
+                    ScErrorCode::InvalidAction,
+                    "[recording authorization only] encountered unauthorized call for a \
+                    contract earlier in the call stack, make sure that you have called \
+                    `authorize_as_current_contract()` with the appropriate arguments for it.",
+                    &[address.into()],
+                ));
+            }
             return Err(host.err(
                 ScErrorType::Auth,
                 ScErrorCode::InvalidAction,
@@ -1695,6 +1724,11 @@ impl InvocationTracker {
                 &[],
             ));
         }
+        // Emulate the function comparison that happens in the enforcing mode
+        // when we're matching a `require_auth` invocation to the authorized
+        // function from XDR.
+        let function_for_comparison = AuthorizedFunction::from_xdr(host, function.to_xdr(host)?)?;
+        let _ = host.compare(&function, &function_for_comparison)?;
         if let Some(curr_invocation) = self.last_authorized_invocation_mut()? {
             curr_invocation
                 .sub_invocations
@@ -2319,7 +2353,11 @@ impl Host {
         contract: AddressObject,
         args: VecObject,
     ) -> Result<Val, HostError> {
-        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::check_auth_invocation(
+                self, contract,
+            ),
+        );
 
         use crate::builtin_contracts::account_contract::ACCOUNT_CONTRACT_CHECK_AUTH_FN_NAME;
         let contract_id = self.contract_id_from_address(contract)?;
