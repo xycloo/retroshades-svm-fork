@@ -463,7 +463,7 @@ pub fn invoke_host_function<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
             &[],
         )
     })?;
-    println!("Invoking host function");
+
     host.set_base_prng_seed(seed32)?;
     if enable_diagnostics {
         host.set_diagnostic_level(DiagnosticLevel::Debug)?;
@@ -473,7 +473,7 @@ pub fn invoke_host_function<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
     }
     let result = {
         let _span1 = tracy_span!("Host::invoke_function");
-        println!("Invoking host function");
+    
         host.invoke_function(host_function)
     };
     if have_trace_hook {

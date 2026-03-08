@@ -4,6 +4,7 @@ mod address;
 mod auth;
 mod basic;
 mod bls12_381;
+mod bn254;
 mod budget_metering;
 mod bytes;
 mod complex;
@@ -28,6 +29,7 @@ mod map;
 #[cfg(feature = "testutils")]
 mod metering_benchmark;
 mod num;
+mod poseidon;
 mod post_mvp;
 mod prng;
 mod protocol_gate;

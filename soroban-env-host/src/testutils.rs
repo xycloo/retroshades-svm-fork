@@ -291,7 +291,9 @@ impl Host {
     ) -> Result<AddressObject, HostError> {
         let _span = tracy_span!("register_test_contract_wasm_from_source_account");
         #[cfg(any(test, feature = "testutils"))]
-        let _invocation_meter_scope = self.maybe_meter_invocation()?;
+        let _invocation_meter_scope = self.maybe_meter_invocation(
+            crate::host::invocation_metering::MeteringInvocation::CreateContractEntryPoint,
+        );
 
         // Use source account-based auth in order to avoid using nonces which
         // won't work well with enforcing ledger footprint.
@@ -353,16 +355,18 @@ impl Host {
             panic!()
         };
 
-        let test = SymbolSmall::try_from_str("test").unwrap();
-
         // First step: insert all the data values in question into the storage map.
-        host.with_test_contract_frame(contract_hash.clone(), test.into(), || {
-            for (k, (t, _)) in data_keys.iter() {
-                let v = host.to_host_val(k).unwrap();
-                host.put_contract_data(v, v, *t).unwrap();
-            }
-            Ok(Val::VOID.into())
-        })
+        host.with_test_contract_frame(
+            contract_hash.clone(),
+            SymbolSmall::try_from_str("test").unwrap().into(),
+            || {
+                for (k, (t, _)) in data_keys.iter() {
+                    let v = host.to_host_val(k).unwrap();
+                    host.put_contract_data(v, v, *t).unwrap();
+                }
+                Ok(Val::VOID.into())
+            },
+        )
         .unwrap();
 
         // Second step: generate some accounts to sign things with.
@@ -1152,4 +1156,34 @@ pub fn simple_account_sign_fn<'a>(
 ) -> Box<dyn Fn(&[u8]) -> Val + 'a> {
     use crate::builtin_contracts::testutils::sign_payload_for_ed25519;
     Box::new(|payload: &[u8]| -> Val { sign_payload_for_ed25519(host, kp, payload).into() })
+}
+
+#[cfg(test)]
+pub(crate) mod crypto {
+    use crate::{crypto::metered_scalar::MeteredScalar, EnvBase, Host, HostError, VecObject};
+    use ark_ff::PrimeField;
+    use hex::FromHex;
+    use rand::rngs::StdRng;
+
+    pub fn from_hex<F: PrimeField>(s: &str) -> F {
+        let a = Vec::from_hex(&s[2..]).expect("Invalid Hex String");
+        F::from_be_bytes_mod_order(&a as &[u8])
+    }
+
+    pub fn random_scalar<F: PrimeField>(rng: &mut StdRng) -> F {
+        F::rand(rng)
+    }
+
+    // Helper function to convert Vec<Vec<S>> to VecObject for nested matrices
+    pub fn vec_of_vec_to_vecobj<S: MeteredScalar>(
+        host: &Host,
+        matrix: &[Vec<S>],
+    ) -> Result<VecObject, HostError> {
+        let mut row_objects = Vec::with_capacity(matrix.len());
+        for row in matrix.iter() {
+            let row_obj = host.metered_scalar_vec_to_vecobj(row.clone())?;
+            row_objects.push(row_obj.to_val());
+        }
+        host.vec_new_from_slice(&row_objects)
+    }
 }

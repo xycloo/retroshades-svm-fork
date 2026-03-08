@@ -44,7 +44,7 @@ pub use host::{
 pub use soroban_env_common::*;
 
 #[cfg(any(test, feature = "testutils"))]
-pub use host::invocation_metering::{FeeEstimate, InvocationResources};
+pub use host::invocation_metering::{FeeEstimate, InvocationResourceLimits, InvocationResources};
 
 pub mod ledger_info;
 pub use ledger_info::LedgerInfo;
