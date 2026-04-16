@@ -35,9 +35,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 # NB: When updating, also update the version in rs-soroban-env dev-dependencies
 [workspace.dependencies.stellar-xdr]
-version = "=22.0.0"
-git = "https://github.com/stellar/rs-stellar-xdr"
-rev = "39d7dbb0c12bd422ee43a6e2e3277789da4eaac8"
+version = "=26.0.0"
 default-features = false
 features = ["serde"]
 
