@@ -155,6 +155,7 @@ impl Default for BudgetTracker {
                 ContractCostType::Bn254FrMul => (),
                 ContractCostType::Bn254FrPow => init_input(), // input is number of bits in the u64 exponent excluding leading zeros
                 ContractCostType::Bn254FrInv => (),
+                ContractCostType::Bn254G1Msm => init_input(),
             }
         }
         mt
@@ -682,6 +683,10 @@ impl Default for BudgetImpl {
                     cpu.const_term = 33151;
                     cpu.lin_term = ScaledU64(0);
                 }
+                ContractCostType::Bn254G1Msm => {
+                    cpu.const_term = 0;
+                    cpu.lin_term = ScaledU64(0);
+                }
             }
 
             // define the memory cost model parameters
@@ -1031,6 +1036,10 @@ impl Default for BudgetImpl {
                     mem.lin_term = ScaledU64(0);
                 }
                 ContractCostType::Bn254FrInv => {
+                    mem.const_term = 0;
+                    mem.lin_term = ScaledU64(0);
+                }
+                ContractCostType::Bn254G1Msm => {
                     mem.const_term = 0;
                     mem.lin_term = ScaledU64(0);
                 }
