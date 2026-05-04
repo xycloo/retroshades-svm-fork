@@ -912,7 +912,7 @@ fn extract_diagnostic_events(events: &Events, diagnostic_events: &mut Vec<Diagno
     }
 }
 
-pub(crate) fn ledger_entry_to_ledger_key(
+pub fn ledger_entry_to_ledger_key(
     le: &LedgerEntry,
     budget: &Budget,
 ) -> Result<LedgerKey, HostError> {
