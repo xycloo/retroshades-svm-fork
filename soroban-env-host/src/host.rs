@@ -12,6 +12,7 @@ use crate::{
     num::*,
     storage::Storage,
     vm::ModuleCache,
+    zephyr::{RetroshadeExport, ZephyrAdapter},
     xdr::{
         int128_helpers, AccountId, Asset, ContractCostType, ContractEventType, ContractExecutable,
         ContractIdPreimage, ContractIdPreimageFromAddress, CreateContractArgsV2, Duration,
@@ -98,6 +99,7 @@ pub(crate) const MIN_LEDGER_PROTOCOL_VERSION: u32 = 26;
 
 #[derive(Clone, Default)]
 struct HostImpl {
+    zephyr_adapter: RefCell<ZephyrAdapter>,
     module_cache: RefCell<Option<ModuleCache>>,
     source_account: RefCell<Option<AccountId>>,
     ledger: RefCell<Option<LedgerInfo>>,
@@ -253,6 +255,12 @@ impl_checked_borrow_helpers!(
     try_borrow_events_mut
 );
 impl_checked_borrow_helpers!(
+    zephyr_adapter,
+    ZephyrAdapter,
+    try_borrow_zephyr,
+    try_borrow_zephyr_mut
+);
+impl_checked_borrow_helpers!(
     authorization_manager,
     AuthorizationManager,
     try_borrow_authorization_manager,
@@ -364,6 +372,7 @@ impl Host {
         #[cfg(all(not(target_family = "wasm"), feature = "tracy"))]
         let _client = tracy_client::Client::start();
         Self(Rc::new(HostImpl {
+            zephyr_adapter: RefCell::new(ZephyrAdapter::default()),
             module_cache: RefCell::new(None),
             source_account: RefCell::new(None),
             ledger: RefCell::new(None),
@@ -752,12 +761,13 @@ impl Host {
     ///
     /// Use [`Host::can_finish`] to determine before calling the function if it
     /// will succeed.
-    pub fn try_finish(self) -> Result<(Storage, Events), HostError> {
+    pub fn try_finish(self) -> Result<(Storage, Events, Vec<RetroshadeExport>), HostError> {
         let events = self.try_borrow_events()?.externalize(&self)?;
+        let retroshades = self.try_borrow_zephyr()?.externalize(&self)?;
         Rc::try_unwrap(self.0)
             .map(|host_impl| {
                 let storage = host_impl.storage.into_inner();
-                (storage, events)
+                (storage, events, retroshades)
             })
             .map_err(|_| {
                 Error::from_type_and_code(ScErrorType::Context, ScErrorCode::InternalError).into()
@@ -1185,6 +1195,16 @@ impl EnvBase for Host {
 
 impl VmCallerEnv for Host {
     type VmUserState = Host;
+
+    fn zephyr_emit(
+        &self,
+        _vmcaller: &mut VmCaller<Host>,
+        target: Val,
+        event: Val,
+    ) -> Result<Void, HostError> {
+        self.record_retroshade(target, event)?;
+        Ok(Val::VOID)
+    }
 
     // region: "context" module functions
 

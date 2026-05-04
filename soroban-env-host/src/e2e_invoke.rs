@@ -28,6 +28,7 @@ use crate::{
         LedgerKeyAccount, LedgerKeyContractCode, LedgerKeyContractData, LedgerKeyTrustLine,
         ScErrorCode, ScErrorType, SorobanAuthorizationEntry, SorobanResources, TtlEntry,
     },
+    zephyr::RetroshadeExport,
     DiagnosticLevel, Error, Host, HostError, LedgerInfo, MeteredOrdMap,
 };
 use crate::{ledger_info::get_key_durability, ModuleCache};
@@ -56,6 +57,10 @@ pub struct InvokeHostFunctionResult {
     ///
     /// Empty when invocation fails.
     pub encoded_contract_events: Vec<Vec<u8>>,
+    /// Retroshade exports emitted during invocation.
+    ///
+    /// Empty when invocation fails.
+    pub retroshades: Vec<RetroshadeExport>,
 }
 
 /// Result of invoking a single host function prepared for embedder consumption.
@@ -90,6 +95,10 @@ pub struct InvokeHostFunctionRecordingModeResult {
     /// Size of the encoded contract events and the return value.
     /// Non-zero only when invocation has succeeded.
     pub contract_events_and_return_value_size: u32,
+    /// Retroshade exports emitted during invocation.
+    ///
+    /// Empty when invocation fails.
+    pub retroshades: Vec<RetroshadeExport>,
 }
 
 /// Represents a change of the ledger entry from 'old' value to the 'new' one.
@@ -482,7 +491,7 @@ pub fn invoke_host_function<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
     if have_trace_hook {
         host.set_trace_hook(None)?;
     }
-    let (storage, events) = host.try_finish()?;
+    let (storage, events, retroshades) = host.try_finish()?;
     if enable_diagnostics {
         extract_diagnostic_events(&events, diagnostic_events);
     }
@@ -510,12 +519,14 @@ pub fn invoke_host_function<T: AsRef<[u8]>, I: ExactSizeIterator<Item = T>>(
             encoded_invoke_result,
             ledger_changes,
             encoded_contract_events,
+            retroshades,
         })
     } else {
         Ok(InvokeHostFunctionResult {
             encoded_invoke_result,
             ledger_changes: vec![],
             encoded_contract_events: vec![],
+            retroshades: vec![],
         })
     }
 }
@@ -807,7 +818,7 @@ pub fn invoke_host_function_in_recording_mode(
     };
     let _resources_roundtrip: SorobanResources =
         host.metered_from_xdr(host.to_xdr_non_metered(&resources)?.as_slice())?;
-    let (storage, events) = host.try_finish()?;
+    let (storage, events, retroshades) = host.try_finish()?;
     if enable_diagnostics {
         extract_diagnostic_events(&events, diagnostic_events);
     }
@@ -868,6 +879,7 @@ pub fn invoke_host_function_in_recording_mode(
         ledger_changes,
         contract_events,
         contract_events_and_return_value_size,
+        retroshades,
     })
 }
 
