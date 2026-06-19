@@ -166,31 +166,7 @@ impl Host {
     }
 
     pub fn current_test_protocol() -> u32 {
-        let max_supported_protocol = crate::meta::INTERFACE_VERSION.protocol;
-        let min_supported_protocol = crate::host::MIN_LEDGER_PROTOCOL_VERSION;
-        if let Ok(vers) = std::env::var("TEST_PROTOCOL") {
-            let test_protocol = vers.parse().expect("parsing TEST_PROTOCOL");
-            if test_protocol >= min_supported_protocol && test_protocol <= max_supported_protocol {
-                test_protocol
-            } else if test_protocol > max_supported_protocol {
-                let next_advice = if cfg!(feature = "next") {
-                    ""
-                } else {
-                    " (consider building with --feature=next)"
-                };
-                panic!(
-                    "TEST_PROTOCOL={} is higher than the max supported protocol {}{}",
-                    test_protocol, max_supported_protocol, next_advice
-                );
-            } else {
-                panic!(
-                    "TEST_PROTOCOL={} is lower than the min supported protocol {}",
-                    test_protocol, min_supported_protocol
-                );
-            }
-        } else {
-            max_supported_protocol
-        }
+        crate::meta::INTERFACE_VERSION.protocol
     }
 
     pub fn set_test_ledger_info_with_current_test_protocol(&self) {
@@ -377,7 +353,7 @@ impl Host {
             create_account(
                 &host,
                 &signing_key_to_account_id(signing_key),
-                vec![(&signing_key, 1)],
+                &[(&signing_key, 1)],
                 100_000_000,
                 1,
                 [1, 0, 0, 0],
@@ -1150,12 +1126,11 @@ pub(crate) mod wasm {
 }
 
 #[allow(clippy::type_complexity)]
-pub fn simple_account_sign_fn<'a>(
-    host: &'a Host,
-    kp: &'a SigningKey,
-) -> Box<dyn Fn(&[u8]) -> Val + 'a> {
+pub fn simple_account_sign_fn(host: &Host, kp: &SigningKey) -> Rc<dyn Fn(&[u8]) -> Val> {
     use crate::builtin_contracts::testutils::sign_payload_for_ed25519;
-    Box::new(|payload: &[u8]| -> Val { sign_payload_for_ed25519(host, kp, payload).into() })
+    let host = host.clone();
+    let kp = kp.clone();
+    Rc::new(move |payload: &[u8]| -> Val { sign_payload_for_ed25519(&host, &kp, payload).into() })
 }
 
 #[cfg(test)]

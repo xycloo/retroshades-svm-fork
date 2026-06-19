@@ -94,9 +94,6 @@ pub struct CoverageScoreboard {
     pub vm_to_vm_calls: usize,
 }
 
-// The soroban 26.x host only supports protocol 26 and later.
-pub(crate) const MIN_LEDGER_PROTOCOL_VERSION: u32 = 26;
-
 #[derive(Clone, Default)]
 struct HostImpl {
     zephyr_adapter: RefCell<ZephyrAdapter>,
@@ -583,8 +580,14 @@ impl Host {
         // allow it in production because it risks replaying an old contract
         // with the new VM and thereby (subtly!) replaying its execution costs
         // wrong.
-        #[cfg(not(test))]
-        if proto < MIN_LEDGER_PROTOCOL_VERSION {
+        //
+        // We also bypass this check when the "next" feature is enabled. "next"
+        // is the unsafe-for-production simulation build whose interface protocol
+        // is bumped one ahead of the host's base protocol; a "next" host can be used
+        // as the current host for both its base protocol and the next one, so it
+        // must be allowed to run the base protocol below its interface version.
+        #[cfg(not(any(test, feature = "next")))]
+        if proto < meta::INTERFACE_VERSION.protocol {
             return Err(self.err(
                 ScErrorType::Context,
                 ScErrorCode::InternalError,
@@ -3657,6 +3660,27 @@ impl VmCallerEnv for Host {
             .try_borrow_authorization_manager()?
             .require_auth(self, address, args)?
             .into())
+    }
+
+    fn delegate_account_auth(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+        address: AddressObject,
+    ) -> Result<Void, Self::Error> {
+        self.ensure_check_auth_frame("delegate_account_auth")?;
+        Ok(self
+            .try_borrow_authorization_manager()?
+            .delegate_account_auth(self, address)?
+            .into())
+    }
+
+    fn get_delegated_signers_for_current_auth_check(
+        &self,
+        _vmcaller: &mut VmCaller<Self::VmUserState>,
+    ) -> Result<VecObject, Self::Error> {
+        self.ensure_check_auth_frame("get_delegated_signers_for_current_auth_check")?;
+        self.try_borrow_authorization_manager()?
+            .get_delegated_signers_for_current_auth_check(self)
     }
 
     fn authorize_as_curr_contract(

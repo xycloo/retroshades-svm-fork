@@ -117,7 +117,7 @@ fn test_simulate_upload_wasm() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         upload_wasm_host_fn(ADD_I32),
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -179,7 +179,7 @@ fn test_simulate_upload_wasm() {
         &test_adjustment_config(),
         &ledger_info,
         upload_wasm_host_fn(ADD_I32),
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -245,7 +245,7 @@ fn test_simulation_returns_insufficient_budget_error() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         upload_wasm_host_fn(ADD_I32),
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -279,7 +279,7 @@ fn test_simulation_returns_logic_error() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         upload_wasm_host_fn(&bad_wasm),
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -320,7 +320,7 @@ fn test_simulate_create_contract() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         contract.host_fn.clone(),
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -340,7 +340,7 @@ fn test_simulate_create_contract() {
     );
     assert!(res.contract_events.is_empty());
     assert!(res.diagnostic_events.is_empty());
-    expect!["2742756"].assert_eq(&res.simulated_instructions.to_string());
+    expect!["2742852"].assert_eq(&res.simulated_instructions.to_string());
     expect!["104"].assert_eq(
         &res.transaction_data
             .as_ref()
@@ -372,7 +372,7 @@ fn test_simulate_create_contract() {
             resource_fee: res.transaction_data.as_ref().unwrap().resource_fee,
         })
     );
-    expect!["1371376"].assert_eq(&res.simulated_memory.to_string());
+    expect!["1371424"].assert_eq(&res.simulated_memory.to_string());
     assert_eq!(
         res.modified_entries,
         vec![LedgerEntryDiff {
@@ -464,7 +464,7 @@ fn test_simulate_invoke_contract_with_auth() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         host_fn,
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -484,7 +484,7 @@ fn test_simulate_invoke_contract_with_auth() {
                 root_invocation: expected_auth_tree.clone(),
             },
             SorobanAuthorizationEntry {
-                credentials: SorobanCredentials::Address(SorobanAddressCredentials {
+                credentials: SorobanCredentials::AddressV2(SorobanAddressCredentials {
                     address: other_account_address.clone(),
                     nonce: other_account_nonce,
                     signature_expiration_ledger: 0,
@@ -497,7 +497,7 @@ fn test_simulate_invoke_contract_with_auth() {
     assert!(res.contract_events.is_empty());
     assert!(!res.diagnostic_events.is_empty());
 
-    expect!["41453957"].assert_eq(&res.simulated_instructions.to_string());
+    expect!["42094533"].assert_eq(&res.simulated_instructions.to_string());
     expect!["144"].assert_eq(
         &res.transaction_data
             .as_ref()
@@ -514,7 +514,7 @@ fn test_simulate_invoke_contract_with_auth() {
             .write_bytes
             .to_string(),
     );
-    expect!["116397"].assert_eq(
+    expect!["117038"].assert_eq(
         &res.transaction_data
             .as_ref()
             .unwrap()
@@ -557,13 +557,125 @@ fn test_simulate_invoke_contract_with_auth() {
             resource_fee: res.transaction_data.as_ref().unwrap().resource_fee,
         })
     );
-    expect!["20726952"].assert_eq(&res.simulated_memory.to_string());
+    expect!["21047240"].assert_eq(&res.simulated_memory.to_string());
     assert_eq!(
         res.modified_entries,
         vec![LedgerEntryDiff {
             state_before: None,
             state_after: Some(nonce_entry(other_account_address, other_account_nonce))
         }]
+    );
+}
+
+#[test]
+fn test_simulate_invoke_contract_with_auth_using_address_credentials() {
+    let contracts = vec![
+        CreateContractData::new([1; 32], AUTH_TEST_CONTRACT),
+        CreateContractData::new([2; 32], AUTH_TEST_CONTRACT),
+        CreateContractData::new([3; 32], AUTH_TEST_CONTRACT),
+        CreateContractData::new([4; 32], AUTH_TEST_CONTRACT),
+    ];
+
+    let tree = AuthContractInvocationNode {
+        address: contracts[0].contract_address.clone(),
+        children: vec![
+            AuthContractInvocationNode {
+                address: contracts[1].contract_address.clone(),
+                children: vec![AuthContractInvocationNode {
+                    address: contracts[2].contract_address.clone(),
+                    children: vec![AuthContractInvocationNode {
+                        address: contracts[3].contract_address.clone(),
+                        children: vec![],
+                    }],
+                }],
+            },
+            AuthContractInvocationNode {
+                address: contracts[2].contract_address.clone(),
+                children: vec![
+                    AuthContractInvocationNode {
+                        address: contracts[1].contract_address.clone(),
+                        children: vec![],
+                    },
+                    AuthContractInvocationNode {
+                        address: contracts[3].contract_address.clone(),
+                        children: vec![],
+                    },
+                ],
+            },
+        ],
+    };
+    let source_account = get_account_id([123; 32]);
+    let other_account = get_account_id([124; 32]);
+    let host_fn = auth_contract_invocation(
+        vec![
+            ScAddress::Account(source_account.clone()),
+            ScAddress::Account(other_account.clone()),
+        ],
+        tree.clone(),
+    );
+    let ledger_info = default_ledger_info();
+    let network_config = default_network_config();
+    let snapshot_source = Rc::new(
+        MockSnapshotSource::from_entries(vec![
+            (
+                contracts[0].wasm_entry.clone(),
+                Some(ledger_info.sequence_number + 100),
+            ),
+            (
+                contracts[0].contract_entry.clone(),
+                Some(ledger_info.sequence_number + 1000),
+            ),
+            (
+                contracts[1].contract_entry.clone(),
+                Some(ledger_info.sequence_number + 1000),
+            ),
+            (
+                contracts[2].contract_entry.clone(),
+                Some(ledger_info.sequence_number + 1000),
+            ),
+            (
+                contracts[3].contract_entry.clone(),
+                Some(ledger_info.sequence_number + 1000),
+            ),
+            (account_entry(&other_account), None),
+        ])
+        .unwrap(),
+    );
+
+    let res = simulate_invoke_host_function_op(
+        snapshot_source,
+        &network_config,
+        &SimulationAdjustmentConfig::no_adjustments(),
+        &ledger_info,
+        host_fn,
+        RecordingInvocationAuthMode::recording(true, false),
+        &source_account,
+        [1; 32],
+        true,
+    )
+    .unwrap();
+    assert_eq!(res.invoke_result.unwrap(), ScVal::Void);
+
+    let other_account_address = ScAddress::Account(other_account.clone());
+    let other_account_nonce = 1039859045797838027;
+    let expected_auth_tree = tree.into_authorized_invocation();
+    assert_eq!(
+        res.auth,
+        vec![
+            SorobanAuthorizationEntry {
+                credentials: SorobanCredentials::SourceAccount,
+                root_invocation: expected_auth_tree.clone(),
+            },
+            SorobanAuthorizationEntry {
+                credentials: SorobanCredentials::Address(SorobanAddressCredentials {
+                    address: other_account_address,
+                    nonce: other_account_nonce,
+                    signature_expiration_ledger: 0,
+                    signature: ScVal::Void,
+                }),
+                root_invocation: expected_auth_tree,
+            }
+        ]
     );
 }
 
@@ -613,7 +725,7 @@ fn test_simulate_invoke_contract_with_autorestore() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         host_fn,
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -634,7 +746,7 @@ fn test_simulate_invoke_contract_with_autorestore() {
         .to_xdr(Limits::none())
         .unwrap()
         .len() as u32;
-    expect!["10998106"].assert_eq(&res.simulated_instructions.to_string());
+    expect!["10998202"].assert_eq(&res.simulated_instructions.to_string());
     expect!["6231403"].assert_eq(
         &res.transaction_data
             .as_ref()
@@ -666,7 +778,7 @@ fn test_simulate_invoke_contract_with_autorestore() {
             resource_fee: res.transaction_data.as_ref().unwrap().resource_fee,
         })
     );
-    expect!["5499042"].assert_eq(&res.simulated_memory.to_string());
+    expect!["5499090"].assert_eq(&res.simulated_memory.to_string());
     assert_eq!(
         res.modified_entries,
         vec![
@@ -1279,7 +1391,7 @@ fn test_simulate_successful_sac_call() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         host_fn,
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
@@ -1301,7 +1413,7 @@ fn test_simulate_successful_sac_call() {
             },
         },]
     );
-    expect!["3479507"].assert_eq(
+    expect!["3479603"].assert_eq(
         &res.transaction_data
             .as_ref()
             .unwrap()
@@ -1417,7 +1529,7 @@ fn test_simulate_unsuccessful_sac_call_with_try_call() {
         &SimulationAdjustmentConfig::no_adjustments(),
         &ledger_info,
         host_fn,
-        RecordingInvocationAuthMode::Recording(true),
+        RecordingInvocationAuthMode::recording(true, true),
         &source_account,
         [1; 32],
         true,
