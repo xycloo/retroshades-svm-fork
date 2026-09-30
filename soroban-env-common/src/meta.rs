@@ -62,3 +62,6 @@ soroban_env_macros::generate_env_meta_consts!(
     ledger_protocol_version: 28,
     pre_release_version: 0,
 );
+
+// NB: p29 ledgers re-executed with p28 host semantics until upstream v29 is merged.
+pub const MAX_LEDGER_PROTOCOL: u32 = 29;

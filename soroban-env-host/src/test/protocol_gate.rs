@@ -1,6 +1,9 @@
 use crate::{
-    meta::INTERFACE_VERSION,
-    testutils::{generate_account_id, generate_bytes_array, wasm as wasm_util},
+    meta::{INTERFACE_VERSION, MAX_LEDGER_PROTOCOL},
+    testutils::{
+        generate_account_id, generate_bytes_array, interface_meta_with_custom_versions,
+        wasm as wasm_util,
+    },
     xdr::{ScErrorCode, ScErrorType},
     AddressObject, Env, Host, HostError, LedgerInfo, Symbol, Val, WasmiMarshal,
 };
@@ -17,7 +20,7 @@ fn ledger_protocol_greater_than_env_protocol_should_fail() -> Result<(), HostErr
     }
 
     let host = observe_host!(host);
-    host.with_mut_ledger_info(|li| li.protocol_version = env_proto + 1)?;
+    host.with_mut_ledger_info(|li| li.protocol_version = MAX_LEDGER_PROTOCOL + 1)?;
     let wasm = wasm_util::wasm_module_calling_protocol_gated_host_fn(env_proto);
     let id = host.register_test_contract_wasm_from_source_account(
         wasm.as_slice(),
@@ -45,6 +48,59 @@ fn wasm_protocol_greater_than_ledger_protocol_should_fail() -> Result<(), HostEr
     );
     assert!(HostError::result_matches_err(
         id,
+        (ScErrorType::WasmVm, ScErrorCode::InvalidInput)
+    ));
+    Ok(())
+}
+
+#[cfg(not(feature = "next"))]
+#[test]
+fn ledger_protocol_up_to_max_ledger_protocol_is_supported() -> Result<(), HostError> {
+    assert_eq!(INTERFACE_VERSION.protocol, 28);
+    assert_eq!(MAX_LEDGER_PROTOCOL, 29);
+
+    let set_ledger_proto = |host: &Host, proto: u32| {
+        let mut li = LedgerInfo::default();
+        li.protocol_version = proto;
+        host.set_ledger_info(li)
+    };
+    let register_with_interface = |host: &Host, proto: u32, pre: u32| {
+        host.register_test_contract_wasm_from_source_account(
+            wasm_util::wasm_module_with_custom_section(
+                "contractenvmetav0",
+                interface_meta_with_custom_versions(proto, pre).as_slice(),
+            )
+            .as_slice(),
+            generate_account_id(host),
+            generate_bytes_array(host),
+        )
+    };
+
+    let host = Host::test_host_with_recording_footprint();
+    host.enable_debug()?;
+    set_ledger_proto(&host, 28)?;
+    set_ledger_proto(&host, 29)?;
+    assert!(HostError::result_matches_err(
+        set_ledger_proto(&host, 30),
+        (ScErrorType::Context, ScErrorCode::InternalError)
+    ));
+
+    let host = Host::test_host_with_recording_footprint();
+    host.enable_debug()?;
+    set_ledger_proto(&host, 29)?;
+    register_with_interface(&host, 28, 0)?;
+    register_with_interface(&host, 29, 0)?;
+    assert!(HostError::result_matches_err(
+        register_with_interface(&host, 30, 0),
+        (ScErrorType::WasmVm, ScErrorCode::InvalidInput)
+    ));
+
+    let host = Host::test_host_with_recording_footprint();
+    host.enable_debug()?;
+    set_ledger_proto(&host, 28)?;
+    register_with_interface(&host, 28, 0)?;
+    assert!(HostError::result_matches_err(
+        register_with_interface(&host, 29, 0),
         (ScErrorType::WasmVm, ScErrorCode::InvalidInput)
     ));
     Ok(())

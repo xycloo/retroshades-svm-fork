@@ -325,9 +325,7 @@ impl ParsedModule {
         interface_version: &ScEnvMetaEntryInterfaceVersion,
     ) -> Result<(), HostError> {
         let want_proto = {
-            let env_proto = meta::INTERFACE_VERSION.protocol;
-            if curr_ledger_protocol <= env_proto {
-                // ledger proto should be before or equal to env proto
+            if curr_ledger_protocol <= meta::MAX_LEDGER_PROTOCOL {
                 curr_ledger_protocol
             } else {
                 return Err(context.error(
@@ -335,7 +333,7 @@ impl ParsedModule {
                     "ledger protocol number is ahead of supported env protocol number",
                     &[
                         Val::from_u32(curr_ledger_protocol).to_val(),
-                        Val::from_u32(env_proto).to_val(),
+                        Val::from_u32(meta::MAX_LEDGER_PROTOCOL).to_val(),
                     ],
                 ));
             }

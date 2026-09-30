@@ -602,7 +602,7 @@ impl Host {
                 &[proto.into()],
             ));
         }
-        if proto > meta::INTERFACE_VERSION.protocol {
+        if proto > meta::MAX_LEDGER_PROTOCOL {
             return Err(self.err(
                 ScErrorType::Context,
                 ScErrorCode::InternalError,
