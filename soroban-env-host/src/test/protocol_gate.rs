@@ -56,8 +56,8 @@ fn wasm_protocol_greater_than_ledger_protocol_should_fail() -> Result<(), HostEr
 #[cfg(not(feature = "next"))]
 #[test]
 fn ledger_protocol_up_to_max_ledger_protocol_is_supported() -> Result<(), HostError> {
-    assert_eq!(INTERFACE_VERSION.protocol, 28);
-    assert_eq!(MAX_LEDGER_PROTOCOL, 29);
+    assert_eq!(INTERFACE_VERSION.protocol, 30);
+    assert_eq!(MAX_LEDGER_PROTOCOL, 30);
 
     let set_ledger_proto = |host: &Host, proto: u32| {
         let mut li = LedgerInfo::default();
@@ -78,29 +78,29 @@ fn ledger_protocol_up_to_max_ledger_protocol_is_supported() -> Result<(), HostEr
 
     let host = Host::test_host_with_recording_footprint();
     host.enable_debug()?;
-    set_ledger_proto(&host, 28)?;
     set_ledger_proto(&host, 29)?;
+    set_ledger_proto(&host, 30)?;
     assert!(HostError::result_matches_err(
-        set_ledger_proto(&host, 30),
+        set_ledger_proto(&host, 31),
         (ScErrorType::Context, ScErrorCode::InternalError)
     ));
 
     let host = Host::test_host_with_recording_footprint();
     host.enable_debug()?;
-    set_ledger_proto(&host, 29)?;
-    register_with_interface(&host, 28, 0)?;
+    set_ledger_proto(&host, 30)?;
     register_with_interface(&host, 29, 0)?;
+    register_with_interface(&host, 30, 0)?;
     assert!(HostError::result_matches_err(
-        register_with_interface(&host, 30, 0),
+        register_with_interface(&host, 31, 0),
         (ScErrorType::WasmVm, ScErrorCode::InvalidInput)
     ));
 
     let host = Host::test_host_with_recording_footprint();
     host.enable_debug()?;
-    set_ledger_proto(&host, 28)?;
-    register_with_interface(&host, 28, 0)?;
+    set_ledger_proto(&host, 29)?;
+    register_with_interface(&host, 29, 0)?;
     assert!(HostError::result_matches_err(
-        register_with_interface(&host, 29, 0),
+        register_with_interface(&host, 30, 0),
         (ScErrorType::WasmVm, ScErrorCode::InvalidInput)
     ));
     Ok(())

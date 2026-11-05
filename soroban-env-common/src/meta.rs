@@ -49,7 +49,7 @@ pub const ENV_META_V0_SECTION_NAME: &str = "contractenvmetav0";
 // protocol number for testing purposes.
 #[cfg(feature = "next")]
 soroban_env_macros::generate_env_meta_consts!(
-    ledger_protocol_version: 29,
+    ledger_protocol_version: 31,
     pre_release_version: 1,
 );
 
@@ -59,9 +59,8 @@ soroban_env_macros::generate_env_meta_consts!(
 // network protocol number.
 #[cfg(not(feature = "next"))]
 soroban_env_macros::generate_env_meta_consts!(
-    ledger_protocol_version: 28,
+    ledger_protocol_version: 30,
     pre_release_version: 0,
 );
 
-// NB: p29 ledgers re-executed with p28 host semantics until upstream v29 is merged.
-pub const MAX_LEDGER_PROTOCOL: u32 = 29;
+pub const MAX_LEDGER_PROTOCOL: u32 = 30;
